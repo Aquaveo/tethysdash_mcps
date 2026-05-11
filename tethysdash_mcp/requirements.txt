@@ -1,0 +1,7 @@
+fastmcp>=3.2.3,<4
+intake
+pydantic
+requests
+starlette
+typing_extensions
+xmltodict

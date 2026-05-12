@@ -7,9 +7,19 @@ Image tags follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Runtime plugin registry now read via HTTP (2026-05-11).** The standalone reads the runtime plugin registry from `${TETHYSDASH_BASE_URL}/runtime-plugins/list/` instead of a local JSON file. Removes the filesystem-coupled `TETHYSDASH_RUNTIME_REGISTRY_PATH` env var entirely. tethysdash side added a sibling read-only endpoint (`Aquaveo/tethysapp-tethys_dash` PR — companion to this change) that exposes the registry anonymously while the existing `runtime-plugins/sync/` POST endpoint stays gated for the browser-side write flow. Plan reference: `docs/plans/2026-05-11-006-feat-runtime-plugin-registry-http-endpoint-plan.md`.
+
+  Operator-visible delta: drop `TETHYSDASH_RUNTIME_REGISTRY_PATH` from your environment. Set only `TETHYSDASH_BASE_URL`. The standalone now decouples cleanly from tethysdash's filesystem and can be deployed remotely (Cloud Run, sidecar, separate host) without volume-mount choreography.
+
+- **`register_runtime_plugin` MCP tool is feature-flagged off in standalone mode.** Returns a structured `{"error": "registration_not_supported", ...}` envelope rather than writing to disk. The tool stays in the MCP surface (so chatbox-core's tool list stays consistent and the prompt parity contract holds); it just refuses the call. Plugin registration goes through the browser-side chatbox UI which posts to tethysdash's `runtime-plugins/sync/` with the user's session credential. Re-enables once auth + an authenticated write path land (plan 2026-05-11-004, deferred).
+
+- Deleted `tethysdash_mcp/plugin_registry_loader.py` — the file existed solely to wrap filesystem reads; the HTTP helper replaces it. The tethysdash-side `plugin_registry_loader.py` (a different file, in `tethysapp-tethys_dash/`) stays — it backs the live `runtime_plugins_sync` Django endpoint.
+
 ### Added
 
-- **`scripts/setup-mcp.sh` (2026-05-11).** Bundled helper modeled on `nrds_mcps/scripts/setup-mcp.sh`. Creates `.venv-mcp/`, installs `tethysdash_mcp/requirements.lock`, and runs `python -m tethysdash_mcp.mcp_server` from the repo dir so the `tethysdash_mcp` package resolves without a `pyproject.toml`. Subcommands: `--setup` (install only), `--run` (boot only), no-arg (setup + run). Honors `MCP_PORT`, `MCP_HOST`, `MCP_TRANSPORT`, `TETHYSDASH_BASE_URL`, `TETHYSDASH_RUNTIME_REGISTRY_PATH`, `ALLOWED_ORIGINS` from the environment. Replaces the previous Quick Start (Python) recipe and Step 2 / Step 4 of the dev runbook with single-line invocations.
+- **`scripts/setup-mcp.sh` (2026-05-11).** Bundled helper modeled on `nrds_mcps/scripts/setup-mcp.sh`. Creates `.venv-mcp/`, installs `tethysdash_mcp/requirements.lock`, and runs `python -m tethysdash_mcp.mcp_server` from the repo dir so the `tethysdash_mcp` package resolves without a `pyproject.toml`. Subcommands: `--setup` (install only), `--run` (boot only), no-arg (setup + run). Honors `MCP_PORT`, `MCP_HOST`, `MCP_TRANSPORT`, `TETHYSDASH_BASE_URL`, `ALLOWED_ORIGINS` from the environment. Replaces the previous Quick Start (Python) recipe and Step 2 / Step 4 of the dev runbook with single-line invocations.
 
 - **Dev runbook + CLI smoke evidence (2026-05-11).** New README section "Running alongside a local tethysdash dev server" with a six-step walkthrough (prerequisites → tethys dev server → venv bootstrap → bridge env vars → standalone boot → chatbox URL config → smoke checklist). Workspace `firoh/CLAUDE.md` carries a pointer paragraph. Key env-var bridge: `TETHYSDASH_RUNTIME_REGISTRY_PATH` must point at `<workspace>/tethysapp-tethys_dash/reactapp/generated/runtimePluginRegistry.json` so chatbox-registered runtime plugins reach the standalone server.
 

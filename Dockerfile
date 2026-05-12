@@ -51,10 +51,9 @@ USER mcp
 
 # Read-only-filesystem safety (Cloud Run / hardened hosts): point HOME at the
 # /tmp tmpfs so any library that touches $HOME/.cache or $HOME/.config has a
-# writable target. Also where plugin_registry_loader's _RUNTIME_REGISTRY_PATH
-# defaults to (/tmp/runtimePluginRegistry.json) — operators that need
-# persistent registration set TETHYSDASH_RUNTIME_REGISTRY_PATH to a mounted
-# volume instead.
+# writable target. The runtime plugin registry is read from tethysdash
+# over HTTP (TETHYSDASH_BASE_URL/runtime-plugins/list/); no local
+# filesystem state for plugins.
 ENV HOME=/tmp
 
 EXPOSE 9000

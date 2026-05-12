@@ -41,7 +41,7 @@ Subcommands:
 - `./scripts/setup-mcp.sh --run` — start the server (venv must already exist)
 - `./scripts/setup-mcp.sh` (no args) — setup + run
 
-The script honors `MCP_PORT`, `MCP_HOST`, `MCP_TRANSPORT`, `TETHYSDASH_BASE_URL`, `TETHYSDASH_RUNTIME_REGISTRY_PATH`, and `ALLOWED_ORIGINS` from the environment. See the env-var table below for defaults.
+The script honors `MCP_PORT`, `MCP_HOST`, `MCP_TRANSPORT`, `TETHYSDASH_BASE_URL`, and `ALLOWED_ORIGINS` from the environment. See the env-var table below for defaults.
 
 The server binds to `127.0.0.1:9000` by default; set `MCP_HOST=0.0.0.0` for non-loopback binding (the Dockerfile already does this for the container path).
 
@@ -78,16 +78,15 @@ In a second terminal, from the workspace root, run the setup script in `--setup`
 
 This creates `mcp/tethysdash_mcps/.venv-mcp/` and installs the locked dependencies from `tethysdash_mcp/requirements.lock`. Idempotent — re-run only when the lockfile changes.
 
-### Step 3 — Set the bridge env vars
+### Step 3 — Point at the tethysdash backend
 
-The standalone needs two pointers: where the tethysdash backend lives, and where to read the runtime-plugin registry that tethysdash's `runtime_plugins_sync` controller writes to. Export from the second terminal:
+The standalone needs to know where the tethysdash Django app is reachable. Export from the second terminal:
 
 ```bash
 export TETHYSDASH_BASE_URL=http://localhost:8000/apps/tethysdash
-export TETHYSDASH_RUNTIME_REGISTRY_PATH="$(pwd)/tethysapp-tethys_dash/reactapp/generated/runtimePluginRegistry.json"
 ```
 
-`TETHYSDASH_RUNTIME_REGISTRY_PATH` **must be an absolute path** and must point at the same file that tethysdash's `controllers.runtime_plugins_sync` writes (`reactapp/generated/runtimePluginRegistry.json` under the tethysdash repo). Without this, plugins you register via the chatbox UI will silently fail to reach the LLM running against the standalone.
+That's it — one env var. The standalone reads the runtime plugin registry over HTTP from `${TETHYSDASH_BASE_URL}/runtime-plugins/list/` (added on the tethysdash side as a sibling of the existing `runtime-plugins/sync/` endpoint), so there's no filesystem-path bridge to configure. When you register a plugin via the chatbox UI, the browser POSTs it to tethysdash's `runtime-plugins/sync/`, and the standalone picks it up on its next tool call.
 
 ### Step 4 — Start the standalone
 
@@ -125,15 +124,15 @@ With both servers running and the chatbox configured, work through these end-to-
 | Tool list | Open chatbox; observe tool count or slash-command popover | 25 tools surfaced (matches the standalone's `@mcp.tool` count) |
 | No-backend tool | `"create a card with title hello and description world showing the value 42"` | Card visualization renders on the dashboard |
 | Backend-touching tool | `"list available intake plugins"` | Returns the local tethysdash's intake plugins (proves `TETHYSDASH_BASE_URL` is reachable) |
-| Runtime plugin registration | Register a plugin via the chatbox (`/register_runtime_plugin` slash command or natural language) | `reactapp/generated/runtimePluginRegistry.json` is updated; the standalone reads the new plugin on its next tool call |
+| Runtime plugin registration | Register a plugin via the chatbox sidebar's plugin-registration UI (NOT the `/register_runtime_plugin` slash command — that tool is feature-flagged off in standalone mode and returns a `registration_not_supported` envelope; plugins are registered through the browser-side UI which posts to tethysdash's `/runtime-plugins/sync/` endpoint with the user's session) | tethysdash's registry updates; the standalone reads the new plugin on its next `list_available_visualizations` call (no restart needed) |
 | Patch operation | `"change the hello card title to greetings"` | `patch_visualization` fires; tile updates in place |
 | Map layer | `"create a map and add a WMS layer for ..."` | Map visualization renders; layer appears |
 
 ### Known caveats
 
 - **Loopback only.** Do not bind the standalone to `0.0.0.0` in this setup — it has no authentication. Authentication is deferred (see `docs/plans/2026-05-11-004-feat-tethysdash-mcps-token-auth-plan.md`).
-- **Registry path must be absolute.** Relative paths like `./reactapp/generated/...` will resolve against whatever directory the standalone was started from. The `$(pwd)/...` form in Step 3 avoids this.
-- **Single-process cache.** The standalone reads `runtimePluginRegistry.json` on each tool call that needs it — no in-process caching of registry entries. Restarting the standalone is not required after registering a plugin via the chatbox.
+- **`register_runtime_plugin` MCP tool is feature-flagged off** in standalone mode and returns a `registration_not_supported` envelope. There's no authenticated write path on the standalone today (tethysdash's `/runtime-plugins/sync/` POST requires a logged-in session, which the standalone has neither cookie nor token for). Plugin registration goes through the browser-side chatbox UI; the standalone reads the resulting registry over HTTP.
+- **No in-process registry caching.** The standalone fetches the registry over HTTP on each tool call that needs it. Registering a plugin via the chatbox UI shows up to the LLM on the very next tool call; no standalone restart needed.
 - **Tool list cached by chatbox-core.** If you restart the standalone, the chatbox may show a stale tool list until the next chatbox-core probe interval. Refreshing the browser tab forces a re-probe.
 - **No CORS issues expected.** The standalone defaults `ALLOWED_ORIGINS=*` with `allow_credentials=False` auto-derived — compatible with the chatbox fetch model.
 
@@ -149,8 +148,7 @@ The embedded server at `tethysapp/tethysdash/mcp/tethysdash_mcp_server.py` (port
 | `MCP_HOST` | `127.0.0.1` (package) / `0.0.0.0` (Docker) | Bind address. Loopback by default for safety; the container's ENV overrides to `0.0.0.0` so the published port is reachable. |
 | `MCP_TRANSPORT` | `streamable-http` | `streamable-http` (path `/mcp`) or `sse` (path `/sse`). |
 | `ALLOWED_ORIGINS` | `*` | CORS allow-list, comma-separated. Set explicitly for production behind a known origin -- wildcard auto-disables `allow_credentials`. |
-| `TETHYSDASH_BASE_URL` | *(empty)* | Base URL of the TethysDash Django app (e.g., `https://tethys.example.com/apps/tethysdash`). When unset, tools that proxy to the backend (`list_intake_plugins`, dynamic-map-layer plugin discovery) return a structured `backend_not_configured` envelope rather than silently mis-targeting `localhost`. |
-| `TETHYSDASH_RUNTIME_REGISTRY_PATH` | `/tmp/runtimePluginRegistry.json` | JSON file backing the runtime Module-Federation plugin registry. `register_runtime_plugin` writes here; `list_available_visualizations` / `render_custom_visualization` read here. The `/tmp` default means registrations survive within a single container session but not across restarts -- mount a volume and point this env var at it for persistence. |
+| `TETHYSDASH_BASE_URL` | *(empty)* | Base URL of the TethysDash Django app (e.g., `https://tethys.example.com/apps/tethysdash`). When unset, tools that proxy to the backend (`list_intake_plugins`, dynamic-map-layer plugin discovery, the runtime-plugin registry read) return a structured `backend_not_configured` envelope or silently fall back to an empty list, rather than silently mis-targeting `localhost`. |
 | `TETHYSDASH_LOG_LEVEL` | `INFO` | One of `DEBUG`, `INFO`, `WARNING`, `ERROR`. |
 | `TETHYSDASH_VERBOSE_ACCESS` | *(unset)* | Set `1`/`true`/`yes` to keep all uvicorn HTTP access logs. Default dampens noise. |
 

@@ -1,0 +1,99 @@
+name: Release
+
+# Build + push a multi-arch OCI image to ghcr.io on every v* tag.
+#
+# This workflow is the "image publishing only" subset of the sibling
+# nrds_mcps release.yml — it deliberately omits the Cloud Run deploy
+# job (no WIF auth, no AR proxy, no /health smoke against a deployed
+# revision). Operators who want to deploy the published image do so
+# themselves with their own deployment story.
+#
+# When plan 2026-05-11-008 (full standalone deploy) revives, the
+# deploy job from nrds_mcps's release.yml can be appended below the
+# release job using the existing ibis-436806 WIF pool.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag to (re-)publish (e.g., 0.2.0). Used only by manual reruns; on a tag push, the tag itself is the version.'
+        required: true
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: aquaveo/tethysdash-mcps
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+# Serialize tag-push builds so back-to-back tags don't race the cache.
+concurrency:
+  group: ghcr-publish-tethysdash-mcps
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # Build + push only runs on tag pushes; workflow_dispatch is kept for
+    # nrds_mcps parity (it gates re-deploys when a deploy job exists) but
+    # currently a no-op here — re-publishing the same tag is a manual
+    # docker pull+push if ever needed.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Derive version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building image for version: $VERSION"
+
+      - name: Setup QEMU (for arm64 emulation)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=latest
+          labels: |
+            org.opencontainers.image.title=TethysDash MCP Server
+            org.opencontainers.image.description=Standalone FastMCP server for the TethysDash dashboard-creation tool surface (25 @mcp.tool + 25 @mcp.prompt). Built on FastMCP with Streamable HTTP transport.
+            org.opencontainers.image.vendor=Aquaveo LLC
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.source=https://github.com/Aquaveo/tethysdash_mcps
+
+      - name: Build and push (multi-arch)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true

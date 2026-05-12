@@ -7,6 +7,20 @@ Image tags follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Image publishing workflow `.github/workflows/release.yml` (2026-05-11).** Tag-driven (`v*`), multi-arch (`linux/amd64` + `linux/arm64`), publishes to `ghcr.io/aquaveo/tethysdash-mcps`. Image tags derive from the git tag (`v0.2.0` → `0.2.0` + `latest`). Mirrors the release-job half of `mcp/nrds_mcps/.github/workflows/release.yml`; the Cloud Run deploy job is deliberately out of scope (see plan `2026-05-11-007-feat-tethysdash-mcps-image-publishing-plan.md`). Includes `provenance: true` + `sbom: true` for supply-chain attestation and GHA cache for fast subsequent builds.
+
+  **One-time operator action after the first tag push:** the GitHub Container Registry package defaults to **private**. To let workshop participants and downstream operators `docker pull` anonymously, flip the package to public at `https://github.com/orgs/Aquaveo/packages/container/tethysdash-mcps/settings` → Danger Zone → "Change visibility" → Public. Subsequent tag pushes inherit the public visibility automatically.
+
+  **Workshop consumption path:**
+
+  ```bash
+  docker run --rm -p 9001:9001 \
+    -e TETHYSDASH_BASE_URL=https://workshop-tethys.example.com/apps/tethysdash \
+    ghcr.io/aquaveo/tethysdash-mcps:latest
+  ```
+
 ### Changed
 
 - **Runtime plugin registry now read via HTTP (2026-05-11).** The standalone reads the runtime plugin registry from `${TETHYSDASH_BASE_URL}/runtime-plugins/list/` instead of a local JSON file. Removes the filesystem-coupled `TETHYSDASH_RUNTIME_REGISTRY_PATH` env var entirely. tethysdash side added a sibling read-only endpoint (`Aquaveo/tethysapp-tethys_dash` PR — companion to this change) that exposes the registry anonymously while the existing `runtime-plugins/sync/` POST endpoint stays gated for the browser-side write flow. Plan reference: `docs/plans/2026-05-11-006-feat-runtime-plugin-registry-http-endpoint-plan.md`.
@@ -46,7 +60,7 @@ Image tags follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `editable_schemas_plugin.py` import rewritten to use `tethysdash_mcp.plugin_helpers`.
 - `plugin_registry_loader.py` rewritten so `_RUNTIME_REGISTRY_PATH` defaults to `/tmp/runtimePluginRegistry.json` (overridable via `TETHYSDASH_RUNTIME_REGISTRY_PATH` env var).
 - Standalone-independence guard: `test_standalone_independence.py` asserts no `tethysapp.*` or `django` modules load when the server is imported.
-- Entry-point env vars: `MCP_PORT` (default `9000`), `MCP_HOST` (package default `127.0.0.1`, Dockerfile overrides to `0.0.0.0`), `MCP_TRANSPORT` (default `streamable-http`), `ALLOWED_ORIGINS` (unset → wildcard fallback).
+- Entry-point env vars: `MCP_PORT` (default `9001`), `MCP_HOST` (package default `127.0.0.1`, Dockerfile overrides to `0.0.0.0`), `MCP_TRANSPORT` (default `streamable-http`), `ALLOWED_ORIGINS` (unset → wildcard fallback).
 - `TETHYSDASH_BASE_URL` defaults to empty string; HTTP-call tools return a `backend_not_configured` envelope when unset, rather than silently mis-targeting localhost.
-- Dockerfile (two-stage builder → runtime, non-root, `HOME=/tmp`, port 9000, `/health` HEALTHCHECK).
+- Dockerfile (two-stage builder → runtime, non-root, `HOME=/tmp`, port 9001, `/health` HEALTHCHECK).
 - GitHub Actions `ci.yml` (smoke import + standalone-independence check + local-load docker build; no push, no release pipeline).

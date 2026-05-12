@@ -11,7 +11,7 @@ DOM events that DashboardLayout.js handles.
 Usage:
     python -m tethysdash_mcp.mcp_server
 
-Connects to chatbox via MCP Streamable HTTP transport on port 9000 by
+Connects to chatbox via MCP Streamable HTTP transport on port 9001 by
 default (override with ``MCP_PORT``) (path: ``/mcp``). Set ``MCP_TRANSPORT=sse`` for the legacy SSE
 compat path during the migration window. Default host binding is
 loopback (``127.0.0.1``); override with ``MCP_HOST`` for deployments
@@ -4736,7 +4736,7 @@ def _configure_logging():
 
 if __name__ == "__main__":
     _configure_logging()
-    port = int(os.getenv("MCP_PORT", "9000"))
+    port = int(os.getenv("MCP_PORT", "9001"))
     # R13: default to loopback binding (CLAUDE.md says the MCP server "must
     # run localhost-bound or behind an authenticated reverse proxy"). The
     # MCP_HOST override exists for production deploys that wrap this server

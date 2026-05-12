@@ -7,6 +7,25 @@ Image tags follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`scripts/setup-mcp.sh` (2026-05-11).** Bundled helper modeled on `nrds_mcps/scripts/setup-mcp.sh`. Creates `.venv-mcp/`, installs `tethysdash_mcp/requirements.lock`, and runs `python -m tethysdash_mcp.mcp_server` from the repo dir so the `tethysdash_mcp` package resolves without a `pyproject.toml`. Subcommands: `--setup` (install only), `--run` (boot only), no-arg (setup + run). Honors `MCP_PORT`, `MCP_HOST`, `MCP_TRANSPORT`, `TETHYSDASH_BASE_URL`, `TETHYSDASH_RUNTIME_REGISTRY_PATH`, `ALLOWED_ORIGINS` from the environment. Replaces the previous Quick Start (Python) recipe and Step 2 / Step 4 of the dev runbook with single-line invocations.
+
+- **Dev runbook + CLI smoke evidence (2026-05-11).** New README section "Running alongside a local tethysdash dev server" with a six-step walkthrough (prerequisites → tethys dev server → venv bootstrap → bridge env vars → standalone boot → chatbox URL config → smoke checklist). Workspace `firoh/CLAUDE.md` carries a pointer paragraph. Key env-var bridge: `TETHYSDASH_RUNTIME_REGISTRY_PATH` must point at `<workspace>/tethysapp-tethys_dash/reactapp/generated/runtimePluginRegistry.json` so chatbox-registered runtime plugins reach the standalone server.
+
+  **CLI smoke run (2026-05-11):** Bootstrapped a fresh venv, set the bridge env vars, booted the standalone, exercised the MCP surface from a Python `fastmcp.Client`:
+  - `GET /health` → 200 `{"status":"ok"}`. ✅
+  - MCP initialize + `list_tools` → 25 tools enumerated (matches `@mcp.tool` count). ✅
+  - `create_card(title='hello', description='world', data='42')` → clean `{"visualization": {...}}` envelope, uuid generated. ✅
+  - `list_intake_plugins({})` against unreachable tethysdash backend → structured error envelope (`Failed to fetch intake plugins from TethysDash: HTTPConnectionPool... Connection refused`) — not a crash, not a silent fallback. ✅
+  - Input-validation middleware: `create_card(body='world')` (wrong kwarg name) → rich validator envelope with `unexpected_kwargs`, `expected_kwargs`, and `fix_hint`. ✅
+
+  **Browser-side smoke pending human follow-up:** runtime-plugin registration via the chatbox UI through the `TETHYSDASH_RUNTIME_REGISTRY_PATH` bridge, end-to-end `patch_visualization` against a live tethysdash dev server, and the chatbox tool-selection / slash-popover surface. CLI smoke confirms the standalone is functionally complete and the runbook is copy-paste correct; the chatbox-driven flows require a human at the keyboard.
+
+  **Gotcha caught + fixed mid-smoke:** initial Step 4 invocation `mcp/tethysdash_mcps/.venv/bin/python -m tethysdash_mcp.mcp_server` from the workspace root failed with `ModuleNotFoundError: No module named 'tethysdash_mcp'` — the repo has no `pyproject.toml`, so `tethysdash_mcp` is only importable when cwd contains the package directory. Runbook updated to use `(cd mcp/tethysdash_mcps && .venv/bin/python -m tethysdash_mcp.mcp_server)` (subshell preserves Step 3 env vars without changing the user's prompt cwd).
+
+  Together these satisfy plan 003 (`docs/plans/2026-05-11-003-refactor-remove-embedded-mcp-server-plan.md`) revival triggers 1 (runnable as a daily dev artifact) and 3 (HTTP-call tools verified against a configured `TETHYSDASH_BASE_URL`). Trigger 2 (chatbox runtime-plugin registration through the bridge) remains pending the browser-side follow-up.
+
 ## [0.1.0] — 2026-05-11
 
 ### Added

@@ -28,13 +28,118 @@ Connect an MCP client to `http://<host>:9000/mcp` (Streamable HTTP transport). S
 
 ## Quick start (Python)
 
+Use the bundled setup script — it creates a dedicated venv at `.venv-mcp/`, installs the locked dependencies, and starts the server in one step:
+
 ```bash
-pip install -r tethysdash_mcp/requirements.lock
 TETHYSDASH_BASE_URL=https://your-tethys-host/apps/tethysdash \
-  python -m tethysdash_mcp.mcp_server
+  ./scripts/setup-mcp.sh
 ```
 
+Subcommands:
+
+- `./scripts/setup-mcp.sh --setup` — create the venv and install deps only (no run)
+- `./scripts/setup-mcp.sh --run` — start the server (venv must already exist)
+- `./scripts/setup-mcp.sh` (no args) — setup + run
+
+The script honors `MCP_PORT`, `MCP_HOST`, `MCP_TRANSPORT`, `TETHYSDASH_BASE_URL`, `TETHYSDASH_RUNTIME_REGISTRY_PATH`, and `ALLOWED_ORIGINS` from the environment. See the env-var table below for defaults.
+
 The server binds to `127.0.0.1:9000` by default; set `MCP_HOST=0.0.0.0` for non-loopback binding (the Dockerfile already does this for the container path).
+
+## Running alongside a local tethysdash dev server
+
+This is the recommended setup for **exercising the standalone in your day-to-day chatbox workflow** instead of (or alongside) the embedded server in `tethysapp-tethys_dash/tethysapp/tethysdash/mcp/`. Six steps from a clean clone to a working chatbox.
+
+### Prerequisites
+
+- Both repos cloned into the same workspace root (e.g., `~/tethysdev/firoh/`):
+  - `tethysapp-tethys_dash/` — the Django app
+  - `mcp/tethysdash_mcps/` — this repo
+- A working Python environment for the tethysdash side, with Django + Tethys SDK + tethysdash installed. Conda, pyenv, or system Python all work — whatever you normally use to run `tethys manage start`.
+- Python 3.11+ available for the standalone's dedicated venv. The bundled `scripts/setup-mcp.sh` creates `.venv-mcp/` for you using `python3` from your PATH. The standalone is deliberately Django/Tethys-free; **do not install it into the tethysdash environment** — the standalone-independence assertion enforces no Django leakage.
+- Loopback only. The runbook below does **not** add authentication. Both processes bind to `127.0.0.1`. Do not expose either port to a non-loopback network with this setup.
+
+### Step 1 — Start the tethysdash Django dev server
+
+From the workspace root, in a terminal with your tethysdash Python environment active:
+
+```bash
+tethys manage start -p 8000
+```
+
+Confirm `http://localhost:8000/apps/tethysdash/` loads in a browser. Sign in.
+
+### Step 2 — Bootstrap the standalone venv
+
+In a second terminal, from the workspace root, run the setup script in `--setup` mode:
+
+```bash
+./mcp/tethysdash_mcps/scripts/setup-mcp.sh --setup
+```
+
+This creates `mcp/tethysdash_mcps/.venv-mcp/` and installs the locked dependencies from `tethysdash_mcp/requirements.lock`. Idempotent — re-run only when the lockfile changes.
+
+### Step 3 — Set the bridge env vars
+
+The standalone needs two pointers: where the tethysdash backend lives, and where to read the runtime-plugin registry that tethysdash's `runtime_plugins_sync` controller writes to. Export from the second terminal:
+
+```bash
+export TETHYSDASH_BASE_URL=http://localhost:8000/apps/tethysdash
+export TETHYSDASH_RUNTIME_REGISTRY_PATH="$(pwd)/tethysapp-tethys_dash/reactapp/generated/runtimePluginRegistry.json"
+```
+
+`TETHYSDASH_RUNTIME_REGISTRY_PATH` **must be an absolute path** and must point at the same file that tethysdash's `controllers.runtime_plugins_sync` writes (`reactapp/generated/runtimePluginRegistry.json` under the tethysdash repo). Without this, plugins you register via the chatbox UI will silently fail to reach the LLM running against the standalone.
+
+### Step 4 — Start the standalone
+
+From the same terminal where you exported the env vars in Step 3, run the setup script in `--run` mode:
+
+```bash
+./mcp/tethysdash_mcps/scripts/setup-mcp.sh --run
+```
+
+The script `cd`s into the repo before invoking `python -m tethysdash_mcp.mcp_server`, so the exported env vars carry through and your prompt's cwd doesn't change. The server listens on `127.0.0.1:9000` (override via `MCP_PORT` / `MCP_HOST`). Confirm `/health` returns 200 (in another terminal):
+
+```bash
+curl -fsS http://localhost:9000/health
+# {"status":"ok"}
+```
+
+The embedded server (port `9001`) is unaffected — both can run simultaneously. The chatbox picks one via its URL config (next step).
+
+### Step 5 — Point the chatbox at the standalone
+
+In the browser tab where tethysdash is open, open the chatbox sidebar (admin/editor only — sign in with an appropriate account if needed). Open the chatbox **settings** (gear icon) and set the MCP server URL to:
+
+```
+http://localhost:9000/mcp
+```
+
+The URL persists in `localStorage` per the `tethysdash:chat:v1:<uuid>` convention, so this only needs to be configured once per browser per dashboard.
+
+### Step 6 — Smoke checklist
+
+With both servers running and the chatbox configured, work through these end-to-end checks. Each should "just work" — if any fails, file the failure (or check the Known caveats below).
+
+| Check | Prompt / Action | Expected |
+|---|---|---|
+| Tool list | Open chatbox; observe tool count or slash-command popover | 25 tools surfaced (matches the standalone's `@mcp.tool` count) |
+| No-backend tool | `"create a card with title hello and description world showing the value 42"` | Card visualization renders on the dashboard |
+| Backend-touching tool | `"list available intake plugins"` | Returns the local tethysdash's intake plugins (proves `TETHYSDASH_BASE_URL` is reachable) |
+| Runtime plugin registration | Register a plugin via the chatbox (`/register_runtime_plugin` slash command or natural language) | `reactapp/generated/runtimePluginRegistry.json` is updated; the standalone reads the new plugin on its next tool call |
+| Patch operation | `"change the hello card title to greetings"` | `patch_visualization` fires; tile updates in place |
+| Map layer | `"create a map and add a WMS layer for ..."` | Map visualization renders; layer appears |
+
+### Known caveats
+
+- **Loopback only.** Do not bind the standalone to `0.0.0.0` in this setup — it has no authentication. Authentication is deferred (see `docs/plans/2026-05-11-004-feat-tethysdash-mcps-token-auth-plan.md`).
+- **Registry path must be absolute.** Relative paths like `./reactapp/generated/...` will resolve against whatever directory the standalone was started from. The `$(pwd)/...` form in Step 3 avoids this.
+- **Single-process cache.** The standalone reads `runtimePluginRegistry.json` on each tool call that needs it — no in-process caching of registry entries. Restarting the standalone is not required after registering a plugin via the chatbox.
+- **Tool list cached by chatbox-core.** If you restart the standalone, the chatbox may show a stale tool list until the next chatbox-core probe interval. Refreshing the browser tab forces a re-probe.
+- **No CORS issues expected.** The standalone defaults `ALLOWED_ORIGINS=*` with `allow_credentials=False` auto-derived — compatible with the chatbox fetch model.
+
+### Why not the embedded server?
+
+The embedded server at `tethysapp/tethysdash/mcp/tethysdash_mcp_server.py` (port 9001) is the default and is the chatbox's pre-configured URL out of the box. It works fine and stays in place. This runbook is the path to exercising the standalone — the future home of the MCP server once `docs/plans/2026-05-11-003-refactor-remove-embedded-mcp-server-plan.md` revives.
 
 ## Configuration (env vars)
 
@@ -86,11 +191,12 @@ The unset default is intentional: silent fallback to `localhost:8080` (the embed
 
 ## Development
 
-Run the contract test suite:
+Run the contract test suite against the script-managed venv:
 
 ```bash
-pip install -r tethysdash_mcp/requirements.lock pytest pytest-asyncio pytest-mock
-pytest test_mcp/ -q
+./scripts/setup-mcp.sh --setup
+.venv-mcp/bin/pip install --quiet pytest pytest-asyncio pytest-mock
+.venv-mcp/bin/python -m pytest test_mcp/ -q
 ```
 
 777 tests covering tool input validation, output envelope shapes, prompt/tool parity, runtime plugin dispatch, CORS, and a standalone-independence guard (`test_mcp/test_standalone_independence.py` asserts no `tethysapp.*` or `django` modules load during import -- runs in a subprocess so it doesn't pollute other tests). The full suite runs in under 6 seconds; no database, no Django.

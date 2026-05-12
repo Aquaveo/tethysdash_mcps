@@ -68,7 +68,6 @@ def test_individual_modules_are_standalone_independent():
         "tethysdash_mcp.plugin_helpers",
         "tethysdash_mcp.editable_schemas",
         "tethysdash_mcp.editable_schemas_plugin",
-        "tethysdash_mcp.plugin_registry_loader",
         "tethysdash_mcp._input_validation_middleware",
         "tethysdash_mcp._observability_middleware",
     ):

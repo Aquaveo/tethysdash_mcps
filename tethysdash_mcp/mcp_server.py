@@ -49,10 +49,6 @@ from tethysdash_mcp.editable_schemas_plugin import (
     is_path_allowed_plugin,
     resolve_editable_paths,
 )
-from tethysdash_mcp.plugin_registry_loader import (
-    load_runtime_plugin_registry,
-    save_runtime_plugin_registry,
-)
 from tethysdash_mcp._input_validation_middleware import (
     InputValidationEnvelopeMiddleware,
 )
@@ -128,6 +124,53 @@ def _backend_not_configured_envelope() -> Dict[str, Any]:
             "before invoking tools that proxy to the backend."
         ),
     }
+
+
+def _load_runtime_plugin_registry_http() -> List[Dict[str, Any]]:
+    """Read the runtime plugin registry from tethysdash over HTTP.
+
+    Replaces the filesystem-coupled reader from the prior architecture
+    (plan 2026-05-11-006). The tethysdash side exposes the registry at
+    ``${TETHYSDASH_BASE_URL}/runtime-plugins/list/`` -- a sibling of the
+    auth-gated ``runtime-plugins/sync/`` endpoint that powers the
+    browser-side registration UI.
+
+    Returns an empty list on any failure (BASE_URL unset, network
+    unreachable, non-200, non-JSON body, non-list payload) to match the
+    legacy loader's silent-recovery posture: registry-read failures must
+    never crash an unrelated tool call. Failures are logged at warning
+    level so operators have a breadcrumb when registered plugins go
+    missing from the LLM-visible tool list.
+
+    ``allow_redirects=False`` defends against a tethysdash misconfiguration
+    that redirects unauthenticated requests to a login page (the response
+    would parse as 200 OK + HTML body and look like an empty registry).
+    """
+    if not TETHYSDASH_BASE_URL:
+        return []
+    try:
+        response = http_requests.get(
+            f"{TETHYSDASH_BASE_URL}/runtime-plugins/list/",
+            timeout=5,
+            allow_redirects=False,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except Exception as exc:
+        LOGGER.warning(
+            "Failed to fetch runtime plugin registry from %s: %s",
+            TETHYSDASH_BASE_URL,
+            exc,
+        )
+        return []
+    if not isinstance(data, list):
+        LOGGER.warning(
+            "Runtime plugin registry endpoint returned non-list payload "
+            "(type=%s); treating as empty.",
+            type(data).__name__,
+        )
+        return []
+    return data
 
 
 def _parse_allowed_origins() -> List[str]:
@@ -210,18 +253,20 @@ CORS_MIDDLEWARE = [
 ]
 
 # ---------------------------------------------------------------------------
-# Runtime plugin registry (shared loader lives in plugin_registry_loader.py)
+# Runtime plugin registry (read via HTTP from tethysdash; see
+# _load_runtime_plugin_registry_http above for the rationale).
 # ---------------------------------------------------------------------------
 
 
 def _get_all_plugins() -> List[Dict[str, Any]]:
     """Return the runtime plugin registry.
 
-    Not cached at module level: register_runtime_plugin writes to the JSON
-    file at runtime, and stale snapshots would shadow newly-registered
-    plugins from list_available_visualizations / render_custom_visualization.
+    Not cached at the module level: the browser-side chatbox runtime-plugin
+    registration UI writes to tethysdash's registry at runtime, and stale
+    snapshots would shadow newly-registered plugins from
+    ``list_available_visualizations`` / ``render_custom_visualization``.
     """
-    plugins = load_runtime_plugin_registry()
+    plugins = _load_runtime_plugin_registry_http()
     LOGGER.info("Runtime plugin registry: %d plugin(s)", len(plugins))
     return plugins
 
@@ -3621,39 +3666,34 @@ def register_runtime_plugin(
 ) -> Dict[str, Any]:
     """Register a runtime MFE plugin so it appears in available visualizations.
 
-    The plugin is saved to the server-side registry and becomes immediately
-    available via list_available_visualizations and render_custom_visualization.
+    Not supported in standalone mode. The standalone MCP server reads the
+    runtime plugin registry from tethysdash over HTTP and has no
+    authenticated write path; registration must go through the browser-
+    side chatbox UI (which posts to tethysdash's ``runtime-plugins/sync/``
+    endpoint with the user's session credential). Re-enables once auth
+    plus a write-side HTTP path land -- see plan 2026-05-11-004 (deferred).
+
+    The arguments are preserved on the tool signature so the prompt /
+    slash-command surface (``test_prompts.py`` parity contract) keeps
+    working; we simply refuse the call with a structured envelope rather
+    than attempting a write the standalone cannot perform.
     """
-    LOGGER.info("register_runtime_plugin called: url=%s, scope=%s, module=%s, label=%s", url, scope, module, label)
-
-    all_plugins = _get_all_plugins()
-    key = f"{scope}/{module}"
-    if any(f"{p.get('scope')}/{p.get('module')}" == key for p in all_plugins):
-        LOGGER.warning("Plugin %s already registered, skipping", key)
-        return {"error": f"Plugin {key} is already registered."}
-
-    entry = {
-        "id": str(uuid.uuid4()),
-        "source": label.strip(),
-        "url": url.strip(),
-        "scope": scope.strip(),
-        "module": module.strip(),
-        "remoteType": remote_type,
-        "label": label.strip(),
-        "description": description,
-        "group": group,
-        "tags": [],
-        "dataKey": data_key,
-        "args": {},
-        "type": "client_custom_remote",
+    LOGGER.info(
+        "register_runtime_plugin called in standalone mode (not supported): "
+        "url=%s, scope=%s, module=%s, label=%s",
+        url, scope, module, label,
+    )
+    return {
+        "error": "registration_not_supported",
+        "message": (
+            "Runtime plugin registration via the MCP tool is not available "
+            "in the standalone tethysdash MCP server. Use the chatbox UI's "
+            "plugin-registration flow (which posts to tethysdash's "
+            "/runtime-plugins/sync/ endpoint with the user's browser "
+            "session) to register the plugin; once registered, this server "
+            "will see it on its next list_available_visualizations call."
+        ),
     }
-
-    runtime = load_runtime_plugin_registry()
-    runtime.append(entry)
-    save_runtime_plugin_registry(runtime)
-
-    LOGGER.info("Registered plugin %s → %s (total runtime: %d)", key, label, len(runtime))
-    return {"status": "registered", "plugin": entry}
 
 
 # ---------------------------------------------------------------------------

@@ -10,12 +10,12 @@
 #   ./scripts/setup-mcp.sh --run    # run only (skip setup)
 #
 # Environment variables honored at run time:
-#   MCP_PORT                         default 9000
-#   MCP_HOST                         default 127.0.0.1 (loopback only)
-#   MCP_TRANSPORT                    default streamable-http
-#   TETHYSDASH_BASE_URL              required for tools that proxy to tethysdash
-#   TETHYSDASH_RUNTIME_REGISTRY_PATH default /tmp/runtimePluginRegistry.json
-#   ALLOWED_ORIGINS                  default *
+#   MCP_PORT             default 9000
+#   MCP_HOST             default 127.0.0.1 (loopback only)
+#   MCP_TRANSPORT        default streamable-http
+#   TETHYSDASH_BASE_URL  required for tools that proxy to tethysdash (plus
+#                        the runtime-plugin registry read via /runtime-plugins/list/)
+#   ALLOWED_ORIGINS      default *
 #
 # See README.md for the full env-var reference.
 

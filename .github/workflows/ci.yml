@@ -54,10 +54,10 @@ jobs:
 
       - name: Container smoke — start, hit /health, stop
         run: |
-          docker run -d --name tethysdash-mcps-ci -p 9000:9000 tethysdash-mcps:ci
+          docker run -d --name tethysdash-mcps-ci -p 9001:9001 tethysdash-mcps:ci
           # Poll /health for up to 30 seconds
           for i in $(seq 1 30); do
-            if curl -sf http://localhost:9000/health > /dev/null; then
+            if curl -sf http://localhost:9001/health > /dev/null; then
               echo "Healthcheck passed after ${i}s"
               docker stop tethysdash-mcps-ci
               docker rm tethysdash-mcps-ci

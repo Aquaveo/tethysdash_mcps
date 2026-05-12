@@ -10,7 +10,7 @@
 #   ./scripts/setup-mcp.sh --run    # run only (skip setup)
 #
 # Environment variables honored at run time:
-#   MCP_PORT             default 9000
+#   MCP_PORT             default 9001
 #   MCP_HOST             default 127.0.0.1 (loopback only)
 #   MCP_TRANSPORT        default streamable-http
 #   TETHYSDASH_BASE_URL  required for tools that proxy to tethysdash (plus
@@ -57,7 +57,7 @@ run() {
     fi
 
     local host="${MCP_HOST:-127.0.0.1}"
-    local port="${MCP_PORT:-9000}"
+    local port="${MCP_PORT:-9001}"
     local transport="${MCP_TRANSPORT:-streamable-http}"
     local path="/mcp"
     [ "$transport" = "sse" ] && path="/sse"

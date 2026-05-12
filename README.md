@@ -8,23 +8,39 @@ Built on [FastMCP](https://github.com/jlowin/fastmcp) with Streamable HTTP trans
 
 ## Quick start (Docker)
 
+### From the published image (recommended)
+
+Pull and run the multi-arch image published to GitHub Container Registry on every `v*` tag:
+
+```bash
+docker run --rm -d \
+  --name tethysdash-mcps \
+  -p 9001:9001 \
+  -e TETHYSDASH_BASE_URL=https://your-tethys-host/apps/tethysdash \
+  ghcr.io/aquaveo/tethysdash-mcps:latest
+```
+
+The image is built for `linux/amd64` and `linux/arm64` (Apple Silicon hosts get a native arm64 image, no QEMU emulation overhead). Tags follow semver from the git tag: `v0.2.0` → `ghcr.io/aquaveo/tethysdash-mcps:0.2.0` plus a floating `:latest` pointer. Pin to a specific version for reproducibility.
+
+### From source (for contributors)
+
 ```bash
 docker build -t tethysdash-mcps:local .
 docker run --rm -d \
   --name tethysdash-mcps \
-  -p 9000:9000 \
+  -p 9001:9001 \
   -e TETHYSDASH_BASE_URL=https://your-tethys-host/apps/tethysdash \
   tethysdash-mcps:local
 ```
 
-Verify it's running:
+### Verify it's running
 
 ```bash
-curl -fsS http://localhost:9000/health
+curl -fsS http://localhost:9001/health
 # {"status":"ok"}
 ```
 
-Connect an MCP client to `http://<host>:9000/mcp` (Streamable HTTP transport). Set `MCP_TRANSPORT=sse` and connect to `/sse` for legacy clients.
+Connect an MCP client to `http://<host>:9001/mcp` (Streamable HTTP transport). Set `MCP_TRANSPORT=sse` and connect to `/sse` for legacy clients.
 
 ## Quick start (Python)
 
@@ -43,7 +59,7 @@ Subcommands:
 
 The script honors `MCP_PORT`, `MCP_HOST`, `MCP_TRANSPORT`, `TETHYSDASH_BASE_URL`, and `ALLOWED_ORIGINS` from the environment. See the env-var table below for defaults.
 
-The server binds to `127.0.0.1:9000` by default; set `MCP_HOST=0.0.0.0` for non-loopback binding (the Dockerfile already does this for the container path).
+The server binds to `127.0.0.1:9001` by default; set `MCP_HOST=0.0.0.0` for non-loopback binding (the Dockerfile already does this for the container path).
 
 ## Running alongside a local tethysdash dev server
 
@@ -96,21 +112,21 @@ From the same terminal where you exported the env vars in Step 3, run the setup 
 ./mcp/tethysdash_mcps/scripts/setup-mcp.sh --run
 ```
 
-The script `cd`s into the repo before invoking `python -m tethysdash_mcp.mcp_server`, so the exported env vars carry through and your prompt's cwd doesn't change. The server listens on `127.0.0.1:9000` (override via `MCP_PORT` / `MCP_HOST`). Confirm `/health` returns 200 (in another terminal):
+The script `cd`s into the repo before invoking `python -m tethysdash_mcp.mcp_server`, so the exported env vars carry through and your prompt's cwd doesn't change. The server listens on `127.0.0.1:9001` (override via `MCP_PORT` / `MCP_HOST`). Confirm `/health` returns 200 (in another terminal):
 
 ```bash
-curl -fsS http://localhost:9000/health
+curl -fsS http://localhost:9001/health
 # {"status":"ok"}
 ```
 
-The embedded server (port `9001`) is unaffected — both can run simultaneously. The chatbox picks one via its URL config (next step).
+The embedded server (also port `9001`) is unaffected by this server's existence, but the two **cannot bind the same port simultaneously**. To run both side-by-side, override one with a different port before starting it, e.g. `MCP_PORT=9002 ./mcp/tethysdash_mcps/scripts/setup-mcp.sh --run`. The chatbox picks which one to talk to via its URL config (next step).
 
 ### Step 5 — Point the chatbox at the standalone
 
 In the browser tab where tethysdash is open, open the chatbox sidebar (admin/editor only — sign in with an appropriate account if needed). Open the chatbox **settings** (gear icon) and set the MCP server URL to:
 
 ```
-http://localhost:9000/mcp
+http://localhost:9001/mcp
 ```
 
 The URL persists in `localStorage` per the `tethysdash:chat:v1:<uuid>` convention, so this only needs to be configured once per browser per dashboard.
@@ -144,7 +160,7 @@ The embedded server at `tethysapp/tethysdash/mcp/tethysdash_mcp_server.py` (port
 
 | Variable | Default | Description |
 |---|---|---|
-| `MCP_PORT` | `9000` | Port the server listens on. |
+| `MCP_PORT` | `9001` | Port the server listens on. |
 | `MCP_HOST` | `127.0.0.1` (package) / `0.0.0.0` (Docker) | Bind address. Loopback by default for safety; the container's ENV overrides to `0.0.0.0` so the published port is reachable. |
 | `MCP_TRANSPORT` | `streamable-http` | `streamable-http` (path `/mcp`) or `sse` (path `/sse`). |
 | `ALLOWED_ORIGINS` | `*` | CORS allow-list, comma-separated. Set explicitly for production behind a known origin -- wildcard auto-disables `allow_credentials`. |
@@ -207,7 +223,7 @@ This package is a snapshot of `tethysapp-tethys_dash/tethysapp/tethysdash/mcp/` 
 - `tethysdash_mcp/plugin_registry_loader.py::_RUNTIME_REGISTRY_PATH` -> env-var read with `/tmp` default (already in place)
 - `tethysdash_mcp/editable_schemas.py::_JSON_PATH` -> `Path(__file__).parent / "data" / "editableSchemas.json"` (already in place)
 - `TETHYSDASH_BASE_URL` default -> `""` (already in place)
-- Entry-point env vars: `TETHYSDASH_MCP_PORT` -> `MCP_PORT`, default port `9001` -> `9000` (already in place)
+- Entry-point env vars: `TETHYSDASH_MCP_PORT` -> `MCP_PORT`, default port `9001` -> `9001` (already in place)
 
 If `editableSchemas.json` changes on the embedded side, copy the updated JSON into `tethysdash_mcp/data/`. The standalone-independence test will catch any missed import rewrites; the full contract suite will catch envelope drift.
 

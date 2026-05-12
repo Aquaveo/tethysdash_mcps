@@ -31,7 +31,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH=/venv/bin:$PATH \
     MCP_HOST=0.0.0.0 \
-    MCP_PORT=9000 \
+    MCP_PORT=9001 \
     MCP_TRANSPORT=streamable-http
 
 # wget for HEALTHCHECK; ca-certificates for HTTPS to the TethysDash backend
@@ -56,7 +56,7 @@ USER mcp
 # filesystem state for plugins.
 ENV HOME=/tmp
 
-EXPOSE 9000
+EXPOSE 9001
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD wget --quiet --spider --tries=1 \

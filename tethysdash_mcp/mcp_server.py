@@ -28,7 +28,10 @@ import uuid
 from typing import Optional, Dict, Any, List, Union
 from typing_extensions import Annotated
 from pydantic import Field
+from pydantic.functional_validators import BeforeValidator
 from fastmcp import FastMCP
+
+from ._uri_field import uri_field, ensure_exactly_one_set
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request as StarletteRequest
@@ -296,6 +299,135 @@ def _convert_plugin_args_to_schema(args: Dict) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Shared helpers for visualization tools (referenced from Pydantic
+# `BeforeValidator` annotations on the @mcp.tool decorators below, so must
+# be defined before the first decorator that uses them).
+# ---------------------------------------------------------------------------
+
+
+# Envelope keys checked when unwrapping dict-shaped `data` arguments.
+# Order matters: nrds-style results use "data", some toolchains use "rows"
+# or "records". First list-valued match wins.
+_ENVELOPE_LIST_KEYS = ("data", "rows", "records")
+
+
+def _unwrap_data_envelope(value: Any) -> Any:
+    """Pre-validator: when the cache+URI substitution layer (chatbox-core's
+    Unit 3) resolves a `data_uri` it writes the FULL cached envelope into
+    the `data` slot — a dict like ``{ok, rows, columns, data:[records], ...}``.
+    That dict fails create_plotly_chart's ``Union[List, str]`` check with two
+    Pydantic errors. This pre-validator unwraps the envelope by extracting
+    the first list-valued ``data`` / ``rows`` / ``records`` key, so by the
+    time the Union check runs the value is the inner list.
+
+    Pass-through for non-dict inputs. Dicts with no list-valued envelope
+    key fall through unchanged — Pydantic will reject them with the normal
+    Union mismatch error.
+    """
+    if isinstance(value, dict):
+        for key in _ENVELOPE_LIST_KEYS:
+            inner = value.get(key)
+            if isinstance(inner, list):
+                return inner
+    return value
+
+
+def _looks_like_records(data: Any) -> bool:
+    """Records mode is detected when ``data`` is a non-empty list of dicts
+    AND the first dict has none of Plotly's trace marker keys (``x``,
+    ``y``, ``type``). A list of trace-shaped dicts is left alone.
+    """
+    if not isinstance(data, list) or not data:
+        return False
+    first = data[0]
+    if not isinstance(first, dict):
+        return False
+    return not any(k in first for k in ("x", "y", "type"))
+
+
+def _records_to_traces(
+    records: List[Dict[str, Any]],
+    x_field: str,
+    y_field: str,
+    series_field: Optional[str] = None,
+) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
+    """Pivot a list of records into Plotly trace dicts. Returns a list of
+    traces on success, or a single-key ``{"error": ...}`` envelope on
+    failure (caller propagates the error).
+
+    Without ``series_field``, emits a single trace whose ``x`` / ``y``
+    arrays are the column values of every record in input order.
+
+    With ``series_field``, groups records by that column's value and emits
+    one trace per group (preserving group first-seen order). Group values
+    are stringified for the trace ``name``.
+    """
+    if not records:
+        return {"error": "invalid_args: cannot pivot empty records list."}
+    sample = records[0]
+    if not isinstance(sample, dict):
+        return {
+            "error": (
+                "invalid_args: records-mode requires a list of dicts; "
+                f"got list of {type(sample).__name__}."
+            )
+        }
+    if x_field not in sample:
+        return {
+            "error": (
+                f"invalid_args: x_field `{x_field}` not found in records. "
+                f"Available fields: {sorted(sample.keys())}."
+            )
+        }
+    if y_field not in sample:
+        return {
+            "error": (
+                f"invalid_args: y_field `{y_field}` not found in records. "
+                f"Available fields: {sorted(sample.keys())}."
+            )
+        }
+    if series_field is not None and series_field not in sample:
+        return {
+            "error": (
+                f"invalid_args: series_field `{series_field}` not found in "
+                f"records. Available fields: {sorted(sample.keys())}."
+            )
+        }
+
+    if series_field is None:
+        return [
+            {
+                "x": [r.get(x_field) for r in records],
+                "y": [r.get(y_field) for r in records],
+                "type": "scatter",
+                "mode": "lines+markers",
+                "name": y_field,
+            }
+        ]
+
+    # Group by series_field, preserving first-seen order so traces appear
+    # in the same order as the input (deterministic for tests + UX).
+    groups: Dict[Any, Dict[str, List[Any]]] = {}
+    for r in records:
+        key = r.get(series_field)
+        if key not in groups:
+            groups[key] = {"x": [], "y": []}
+        groups[key]["x"].append(r.get(x_field))
+        groups[key]["y"].append(r.get(y_field))
+
+    return [
+        {
+            "x": g["x"],
+            "y": g["y"],
+            "type": "scatter",
+            "mode": "lines+markers",
+            "name": str(key),
+        }
+        for key, g in groups.items()
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Built-in visualization tools
 # ---------------------------------------------------------------------------
 
@@ -316,22 +448,86 @@ def _convert_plugin_args_to_schema(args: Dict) -> Dict[str, Any]:
 )
 def create_plotly_chart(
     data: Annotated[
-        Union[List[Dict[str, Any]], str],
+        Optional[Union[List[Dict[str, Any]], str]],
+        BeforeValidator(_unwrap_data_envelope),
         Field(
+            default=None,
             description=(
-                "Array of Plotly trace objects. Each trace MUST have non-empty "
-                "'x' and 'y' arrays. Optionally 'type' (default 'scatter'), "
-                "'name' (legend label), 'mode' ('lines' / 'markers' / "
-                "'lines+markers'). MUST contain at least one trace — do NOT "
-                "call this with `data=[]`. If a data-source tool failed or "
-                "returned no rows, ABORT and report the data-fetch error to "
-                "the user; do NOT fall back to creating an empty chart."
+                "Array of Plotly trace objects, OR a list of data records "
+                "when `x_field` and `y_field` are provided (server pivots "
+                "records into traces). Trace objects MUST have non-empty "
+                "`x` and `y` arrays; optional `type` (default 'scatter'), "
+                "`name`, `mode`. MUST contain at least one element. "
+                "Server unwraps dict envelopes carrying a `data` / `rows` "
+                "/ `records` list, so the cache-URI substitution path "
+                "passes through cleanly."
             ),
             min_length=1,
         ),
-    ],
-    layout: Annotated[Optional[Dict[str, Any]], Field(description="Plotly layout object with title, axis labels, etc.")] = None,
-    config: Annotated[Optional[Dict[str, Any]], Field(description="Plotly config object (responsive, displaylogo, etc.)")] = None,
+    ] = None,
+    data_uri: Annotated[
+        Optional[Union[str, List[str]]],
+        uri_field(inline_arg_name="data"),
+    ] = None,
+    x_field: Annotated[
+        Optional[str],
+        Field(
+            default=None,
+            description=(
+                "Records-mode pivot: name of the column in `data` records "
+                "whose values populate the trace x-axis. Required when "
+                "`data` is records-shaped (a list of dicts without Plotly "
+                "trace keys like `x` / `y` / `type`). Ignored when `data` "
+                "is already a list of trace objects."
+            ),
+        ),
+    ] = None,
+    y_field: Annotated[
+        Optional[str],
+        Field(
+            default=None,
+            description=(
+                "Records-mode pivot: name of the column in `data` records "
+                "whose values populate the trace y-axis. Required when "
+                "`data` is records-shaped. Ignored when `data` is already "
+                "a list of trace objects."
+            ),
+        ),
+    ] = None,
+    series_field: Annotated[
+        Optional[str],
+        Field(
+            default=None,
+            description=(
+                "Records-mode pivot: optional name of the column to group "
+                "records by, producing one trace per group. Omit for a "
+                "single trace across all records."
+            ),
+        ),
+    ] = None,
+    layout: Annotated[
+        Optional[Union[Dict[str, Any], str]],
+        Field(
+            default=None,
+            description=(
+                "Plotly layout object with title, axis labels, etc. "
+                "Pass a JSON object or omit. Several LLM models emit the "
+                "literal string 'None' / 'null' here; the server coerces "
+                "those to actual null."
+            ),
+        ),
+    ] = None,
+    config: Annotated[
+        Optional[Union[Dict[str, Any], str]],
+        Field(
+            default=None,
+            description=(
+                "Plotly config object (responsive, displaylogo, etc.). "
+                "Pass a JSON object or omit. String 'None' / 'null' is "
+                "coerced to null."
+            ),
+        ),
+    ] = None,
     title: Annotated[Optional[str], Field(description="Chart title (shorthand - added to layout.title)")] = None,
     w: Annotated[
         int,
@@ -366,6 +562,54 @@ def create_plotly_chart(
     Returns a visualization spec that the chatbox dispatches as a grid item.
     The chart renders using TethysDash's native BasePlot component.
     """
+    # LLM-syntax-leak recovery (Plan 2026-05-18-002 Unit 5 follow-up):
+    # nemotron-3, qwen-3.5, deepseek-pro-4 all observed emitting the
+    # string "None" / "null" for Optional[Dict] args. We accept these
+    # as Union[Dict, str] then coerce back to actual None here.
+    layout = _coerce_none_string(layout)
+    config = _coerce_none_string(config)
+    # JSON-string acceptance for layout/config (matches the existing
+    # `data: Union[List, str]` pattern). Some LLMs emit nested dicts as
+    # JSON strings to avoid in-output structure complexity.
+    if isinstance(layout, str):
+        try:
+            layout = json.loads(layout)
+        except json.JSONDecodeError as e:
+            return {"error": f"invalid_args: `layout` is not valid JSON: {e}"}
+    if isinstance(config, str):
+        try:
+            config = json.loads(config)
+        except json.JSONDecodeError as e:
+            return {"error": f"invalid_args: `config` is not valid JSON: {e}"}
+
+    # Plan 2026-05-18-002 Unit 5 — validate the exactly-one-of contract
+    # between `data` (inline) and `data_uri` (cache URI). In the mediated
+    # path, chatbox-core resolves `data_uri` into `data` BEFORE dispatch
+    # and drops the `data_uri` arg, so this server-side validator should
+    # see exactly one of the two set. Defense-in-depth for unmediated
+    # clients (Claude Desktop, mcp-cli) that don't run chatbox-core's
+    # substitution layer.
+    err = ensure_exactly_one_set(data, "data", data_uri, "data_uri")
+    if err:
+        return {"error": err}
+    if data_uri is not None:
+        # Unmediated client — server cannot resolve cache URIs (they're
+        # client-side IndexedDB keys, not server-resolvable handles).
+        return {
+            "error": (
+                "invalid_args: `data_uri` arrived unresolved at the server. "
+                "Cache URIs are resolved by chatbox-core's substitution "
+                "layer before tool dispatch — non-chatbox-core MCP clients "
+                "must pass inline `data` instead."
+            ),
+            "fix_hint": (
+                "If you're using chatbox-core, ensure `enableResultCache={true}` "
+                "is set on the <Chatbox> mount. If you're a different MCP "
+                "client (Claude Desktop, mcp-cli, custom), retry with `data` "
+                "populated inline as the structured array."
+            ),
+        }
+
     # Dict-coercion pattern (see docs/solutions/best-practices/mcp-tool-dict-parameter-coercion)
     if isinstance(data, str):
         try:
@@ -386,6 +630,35 @@ def create_plotly_chart(
                 "data fetch failed."
             )
         }
+
+    # Records-mode pivot. When `data` is a list of dicts that lack Plotly
+    # trace markers (`x` / `y` / `type`), treat it as raw records and pivot
+    # using `x_field` / `y_field` / `series_field`. This removes the
+    # LLM-as-ETL transformation step — the LLM names the columns to plot,
+    # the server constructs the traces. Plotly-trace-shaped inputs bypass
+    # the pivot entirely.
+    if _looks_like_records(data):
+        if not x_field or not y_field:
+            return {
+                "error": (
+                    "invalid_args: `data` looks like records (list of dicts "
+                    "without Plotly trace keys). Provide `x_field` and "
+                    "`y_field` so the server can pivot records into traces, "
+                    "or pass `data` as a list of Plotly trace objects "
+                    "(each carrying `x` / `y` / `type`)."
+                ),
+                "fix_hint": (
+                    "Pick one column name from the records for x_field "
+                    "(e.g., the time column) and one for y_field (e.g., "
+                    "the value column). Add series_field if the records "
+                    "contain multiple series and you want one trace per "
+                    "series."
+                ),
+            }
+        pivot_result = _records_to_traces(data, x_field, y_field, series_field)
+        if isinstance(pivot_result, dict) and "error" in pivot_result:
+            return pivot_result
+        data = pivot_result
 
     final_layout = layout or {}
     if title and "title" not in final_layout:
@@ -425,20 +698,27 @@ def create_plotly_chart(
 )
 def create_data_table(
     data: Annotated[
-        Union[List[Dict[str, Any]], str],
+        Optional[Union[List[Dict[str, Any]], str]],
+        BeforeValidator(_unwrap_data_envelope),
         Field(
+            default=None,
             description=(
                 "Array of row objects. Each dict maps column names to cell "
-                "values; all rows must share the same keys. May be passed "
-                "as a JSON-string array too. MUST contain at least one row "
-                "— do NOT call this with `data=[]`. If a data-source tool "
-                "failed or returned no rows, ABORT and report the data-fetch "
-                "error to the user; do NOT fall back to creating an empty "
-                "table."
+                "values; all rows must share the same keys. MUST contain at "
+                "least one row — do NOT call this with `data=[]`. If a "
+                "data-source tool failed or returned no rows, ABORT and "
+                "report the data-fetch error to the user; do NOT fall back "
+                "to creating an empty table. Server unwraps dict envelopes "
+                "carrying a `data` / `rows` / `records` list, so the "
+                "cache-URI substitution path passes through cleanly."
             ),
             min_length=1,
         ),
-    ],
+    ] = None,
+    data_uri: Annotated[
+        Optional[Union[str, List[str]]],
+        uri_field(inline_arg_name="data"),
+    ] = None,
     title: Annotated[Optional[str], Field(description="Table title")] = None,
     subtitle: Annotated[Optional[str], Field(description="Table subtitle")] = None,
     w: Annotated[
@@ -469,6 +749,27 @@ def create_data_table(
 
     Returns a visualization spec that renders using TethysDash's native DataTable component.
     """
+    # Plan 2026-05-18-002 Unit 5 — see create_plotly_chart for the same
+    # exactly-one-of contract validation.
+    err = ensure_exactly_one_set(data, "data", data_uri, "data_uri")
+    if err:
+        return {"error": err}
+    if data_uri is not None:
+        return {
+            "error": (
+                "invalid_args: `data_uri` arrived unresolved at the server. "
+                "Cache URIs are resolved by chatbox-core's substitution "
+                "layer before tool dispatch — non-chatbox-core MCP clients "
+                "must pass inline `data` instead."
+            ),
+            "fix_hint": (
+                "If you're using chatbox-core, ensure `enableResultCache={true}` "
+                "is set on the <Chatbox> mount. If you're a different MCP "
+                "client, retry with `data` populated inline as the structured "
+                "array."
+            ),
+        }
+
     # Dict-coercion pattern (see docs/solutions/best-practices/mcp-tool-dict-parameter-coercion)
     if isinstance(data, str):
         try:
@@ -502,6 +803,29 @@ def create_data_table(
             "h": h,
         }
     }
+
+
+def _coerce_none_string(value: Any) -> Any:
+    """Recover from a common LLM-syntax leak on Optional[Dict] / Optional[X] args.
+
+    Several models (Ollama Cloud's nemotron-3, qwen-3.5, deepseek-pro-4 —
+    observed 2026-05-18 across all three) emit the Python literal ``None``
+    or its string form ``"None"`` / ``"null"`` as a value when the field
+    is genuinely meant to be empty. Pydantic's ``Optional[Dict[str, Any]]``
+    rejects the string ``"None"`` with a ``dict_type`` error, producing
+    `argument validation failed` envelopes that the LLM can't easily
+    recover from since the model thinks it correctly indicated "no value".
+
+    This coercion runs at tool body entry — before any Pydantic-validated
+    work uses the value — so the call proceeds normally if the LLM's only
+    mistake was the syntax leak. Pure pass-through for any non-string-None
+    value (real dicts, None, scalars, etc.).
+    """
+    if isinstance(value, str):
+        stripped = value.strip().lower()
+        if stripped in ("none", "null", ""):
+            return None
+    return value
 
 
 def _coerce_card_data(data: Any) -> List[Dict[str, Any]]:
@@ -570,8 +894,15 @@ def create_card(
     data: Annotated[Optional[Any], Field(description=(
         "List of stat entries; each entry is a dict with optional `label`, "
         "`value`, `color`, and `icon`. Scalars, single dicts, and JSON-string "
-        "payloads are coerced into list-of-dict form."
+        "payloads are coerced into list-of-dict form. "
+        "PREFER `data_uri` when the data came from a prior tool call in this "
+        "conversation — chatbox-core resolves the URI into `data` "
+        "automatically and you skip the cost of re-emitting a large list."
     ))] = None,
+    data_uri: Annotated[
+        Optional[Union[str, List[str]]],
+        uri_field(inline_arg_name="data"),
+    ] = None,
     w: Annotated[
         int,
         Field(
@@ -607,6 +938,33 @@ def create_card(
     strings raise and produce an ``{"error": ...}`` envelope rather than
     silently becoming a scalar label.
     """
+    # Plan 2026-05-18-002 Unit 5 — exactly-one-of contract between `data`
+    # (inline) and `data_uri` (cache URI). For `create_card` the inline
+    # form accepts None (empty placeholder is valid) so the validator
+    # only fires when BOTH are set or when `data_uri` arrived unresolved.
+    if data is not None and data_uri is not None:
+        return {
+            "error": (
+                "invalid_args: both `data` and `data_uri` were set on the "
+                "same call. Pass EITHER inline `data` OR a `data_uri` "
+                "(mcp+cache:// URI) but not both."
+            )
+        }
+    if data_uri is not None:
+        return {
+            "error": (
+                "invalid_args: `data_uri` arrived unresolved at the server. "
+                "Cache URIs are resolved by chatbox-core's substitution "
+                "layer before tool dispatch — non-chatbox-core MCP clients "
+                "must pass inline `data` instead."
+            ),
+            "fix_hint": (
+                "If you're using chatbox-core, ensure `enableResultCache={true}` "
+                "is set on the <Chatbox> mount. If you're a different MCP "
+                "client, retry with `data` populated inline."
+            ),
+        }
+
     try:
         coerced_data = _coerce_card_data(data)
     except ValueError as exc:

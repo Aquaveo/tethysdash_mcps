@@ -325,7 +325,12 @@ def create_plotly_chart(
                 "'lines+markers'). MUST contain at least one trace — do NOT "
                 "call this with `data=[]`. If a data-source tool failed or "
                 "returned no rows, ABORT and report the data-fetch error to "
-                "the user; do NOT fall back to creating an empty chart."
+                "the user; do NOT fall back to creating an empty chart. "
+                "STRONGLY PREFER passing `data` as a structured array (the "
+                "primary type) — emitting valid JSON inside a stringified "
+                "array form is error-prone for long traces and silently "
+                "doubles latency on parse failure. Use the string form ONLY "
+                "if your runtime cannot emit nested arrays."
             ),
             min_length=1,
         ),
@@ -371,7 +376,17 @@ def create_plotly_chart(
         try:
             data = json.loads(data)
         except json.JSONDecodeError as e:
-            return {"error": f"invalid_args: `data` is not valid JSON: {e}"}
+            return {
+                "error": f"invalid_args: `data` is not valid JSON: {e}",
+                "fix_hint": (
+                    "On retry, pass `data` as a STRUCTURED array directly "
+                    "(e.g. data: [{...trace...}, ...]) rather than as a "
+                    "JSON-stringified array. The string form is error-prone "
+                    "for long traces — token-by-token generation of nested "
+                    "JSON commonly drifts mid-array. The structured form is "
+                    "what the tool's input schema accepts as the primary type."
+                ),
+            }
 
     # Server-side defense: Pydantic min_length=1 catches `data=[]` at the
     # input level, but `data="[]"` (JSON string of empty array) passes
@@ -429,12 +444,16 @@ def create_data_table(
         Field(
             description=(
                 "Array of row objects. Each dict maps column names to cell "
-                "values; all rows must share the same keys. May be passed "
-                "as a JSON-string array too. MUST contain at least one row "
-                "— do NOT call this with `data=[]`. If a data-source tool "
-                "failed or returned no rows, ABORT and report the data-fetch "
-                "error to the user; do NOT fall back to creating an empty "
-                "table."
+                "values; all rows must share the same keys. MUST contain at "
+                "least one row — do NOT call this with `data=[]`. If a "
+                "data-source tool failed or returned no rows, ABORT and "
+                "report the data-fetch error to the user; do NOT fall back "
+                "to creating an empty table. "
+                "STRONGLY PREFER passing `data` as a structured array (the "
+                "primary type) — emitting valid JSON inside a stringified "
+                "array form is error-prone for long row sets and silently "
+                "doubles latency on parse failure. Use the string form ONLY "
+                "if your runtime cannot emit nested arrays."
             ),
             min_length=1,
         ),
@@ -474,7 +493,16 @@ def create_data_table(
         try:
             data = json.loads(data)
         except json.JSONDecodeError as e:
-            return {"error": f"invalid_args: `data` is not valid JSON: {e}"}
+            return {
+                "error": f"invalid_args: `data` is not valid JSON: {e}",
+                "fix_hint": (
+                    "On retry, pass `data` as a STRUCTURED array directly "
+                    "(e.g. data: [{...row...}, ...]) rather than as a "
+                    "JSON-stringified array. The string form is error-prone "
+                    "for long row sets — token-by-token generation of "
+                    "nested JSON commonly drifts mid-array."
+                ),
+            }
 
     # Server-side defense: Pydantic min_length catches data=[] but not
     # data="[]" (JSON string of empty array) — re-check after json.loads.

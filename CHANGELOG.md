@@ -7,6 +7,32 @@ Image tags follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-05-19
+
+### Added
+
+- **`data_uri` opt-in on `create_plotly_chart`, `create_data_table`, `create_card`.** Receiving side of chatbox-core's MCP result-by-reference protocol (chatbox-core 0.7.0). The three create_* tools that take inline `data` arrays gain an optional `data_uri: str | list[str]` arg. After chatbox-core's substitution layer resolves the URI from its IndexedDB cache, the server sees the call as if the LLM had passed `data` directly — no MCP wire-contract change for the mediated path. New shared helpers in `tethysdash_mcp/_uri_field.py`: `uri_field(inline_arg_name=...)` for the Pydantic Field-factory (regex-validated `mcp+cache://<conv-id>/<token>`, `max_length=128`) and `ensure_exactly_one_set(...)` for the mutual-exclusion contract.
+
+- **Envelope unwrap via `BeforeValidator(_unwrap_data_envelope)`** on `create_plotly_chart.data` and `create_data_table.data`. Pre-validator extracts the first list-valued `data` / `rows` / `records` key from dict inputs before Pydantic's Union check. Defends against the case where chatbox-core's URI substitution writes a full upstream envelope (`{ok, rows, columns, data:[...]}`) into a slot that expected the inner list. Published JSON schema is unchanged — LLM-visible types stay `Union[List, str]`.
+
+- **Records-mode pivot on `create_plotly_chart`.** New optional `x_field` / `y_field` / `series_field` args let the LLM name source columns instead of constructing Plotly trace arrays. Server detects records (list of dicts without Plotly trace keys `x`/`y`/`type`) and pivots into traces — single trace if no `series_field`, one trace per group otherwise. Removes the LLM-as-ETL transformation step that the cache+URI protocol was silently bypassing.
+
+- **None-string + JSON-string coercion on `Optional[Dict]` args.** `layout` and `config` on `create_plotly_chart` widened to `Optional[Union[Dict[str, Any], str]]`. Server coerces `"None"` / `"null"` / `""` literal strings to actual `None` (some Ollama Cloud models emit those for genuinely-empty optional dicts), then `json.loads` if still string (some models emit nested dicts as JSON strings to flatten output complexity).
+
+### Changed
+
+- **Softened `_uri_field.py` description framing.** Dropped prohibitive `"DO NOT"` / `"WRONG"` / `"wasting tokens"` language that was suspected of biasing weak models toward defensive over-quoting. Replaced with imperative direction on when to use the URI vs. inline form.
+
+### Tests
+
+- 24 new tests in `test_mcp/test_data_uri_opt_in.py` covering: backward-compat inline-data calls on all three tools (3); unmediated-client `data_uri` rejection (3); both-set / neither-set conflict envelopes (5); Pydantic pattern enforcement on bad URIs (2); None-string + JSON-string coercion + production-failure-mode reproduction (5); envelope unwrap (data/rows/records keys + rejection of dicts without list-valued keys) and records-mode pivot (single trace, series grouping, missing-field rejection, backward-compat trace passthrough, end-to-end envelope→records→traces) (6). Full suite: 821 passed.
+
+### Documentation
+
+- Solution documented at `docs/solutions/integration-issues/mcp-data-envelope-unwrap-and-records-pivot-2026-05-19.md` (firoh workspace). Cross-link refreshes applied to two related `best-practices/` docs (Pydantic field constraints + dict parameter coercion).
+
+## [0.2.0] — 2026-05-11
+
 ### Added
 
 - **Image publishing workflow `.github/workflows/release.yml` (2026-05-11).** Tag-driven (`v*`), multi-arch (`linux/amd64` + `linux/arm64`), publishes to `ghcr.io/aquaveo/tethysdash-mcps`. Image tags derive from the git tag (`v0.2.0` → `0.2.0` + `latest`). Mirrors the release-job half of `mcp/nrds_mcps/.github/workflows/release.yml`; the Cloud Run deploy job is deliberately out of scope (see plan `2026-05-11-007-feat-tethysdash-mcps-image-publishing-plan.md`). Includes `provenance: true` + `sbom: true` for supply-chain attestation and GHA cache for fast subsequent builds.

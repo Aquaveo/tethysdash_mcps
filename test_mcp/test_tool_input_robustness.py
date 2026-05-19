@@ -533,6 +533,54 @@ async def test_create_data_table_rejects_empty_data(client):
     )
 
 
+async def test_create_plotly_chart_malformed_json_string_carries_fix_hint(client):
+    """Regression for the 2026-05-18 200s incident: LLM emits `data` as a
+    malformed JSON-string-literal (e.g. stray comma mid-array), tool body
+    rejects on json.loads. The rejection envelope now carries a `fix_hint`
+    telling the LLM to retry with the STRUCTURED array form instead of
+    the stringified form — biasing the next attempt toward the schema's
+    primary type and away from the error-prone string arm.
+    """
+    async with client:
+        result = await client.call_tool(
+            "create_plotly_chart",
+            # Malformed JSON string — stray comma after the closing brace.
+            {"data": '[{"x":[1,2,3],"y":[4,5,6]},,]'},
+        )
+    payload = _structured(result)
+    assert payload.get("error", "").startswith("invalid_args:"), payload
+    assert "is not valid JSON" in payload["error"], payload
+    fix_hint = payload.get("fix_hint", "")
+    # Hint must name the structured form as the recommended retry path.
+    assert "STRUCTURED" in fix_hint or "structured" in fix_hint, (
+        f"fix_hint must recommend structured form; got {fix_hint!r}"
+    )
+    # Hint must mention the error-prone nature of stringified arrays.
+    assert "string" in fix_hint.lower(), (
+        f"fix_hint should reference the string form being error-prone; got {fix_hint!r}"
+    )
+
+
+async def test_create_data_table_malformed_json_string_carries_fix_hint(client):
+    """Companion to the create_plotly_chart test — same envelope shape
+    on create_data_table when the LLM emits a malformed JSON string for
+    `data`. Pins parity across both create_* tools that take a Union
+    list-or-string for `data`.
+    """
+    async with client:
+        result = await client.call_tool(
+            "create_data_table",
+            {"data": '[{"col":1},{"col":2'},  # Unclosed bracket / missing closing.
+        )
+    payload = _structured(result)
+    assert payload.get("error", "").startswith("invalid_args:"), payload
+    assert "is not valid JSON" in payload["error"], payload
+    fix_hint = payload.get("fix_hint", "")
+    assert "STRUCTURED" in fix_hint or "structured" in fix_hint, (
+        f"fix_hint must recommend structured form; got {fix_hint!r}"
+    )
+
+
 async def test_create_plotly_chart_rejects_tiny_h(client):
     """`h=5` is below the practical minimum (~10 grid units ≈ 50-100px
     tall, already squished). Pydantic ge=10 enforces the floor."""

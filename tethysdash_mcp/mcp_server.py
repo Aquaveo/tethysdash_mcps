@@ -29,6 +29,8 @@ from typing import Optional, Dict, Any, List, Union
 from typing_extensions import Annotated
 from pydantic import Field
 from fastmcp import FastMCP
+
+from ._uri_field import uri_field, ensure_exactly_one_set
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request as StarletteRequest
@@ -316,8 +318,9 @@ def _convert_plugin_args_to_schema(args: Dict) -> Dict[str, Any]:
 )
 def create_plotly_chart(
     data: Annotated[
-        Union[List[Dict[str, Any]], str],
+        Optional[Union[List[Dict[str, Any]], str]],
         Field(
+            default=None,
             description=(
                 "Array of Plotly trace objects. Each trace MUST have non-empty "
                 "'x' and 'y' arrays. Optionally 'type' (default 'scatter'), "
@@ -325,11 +328,19 @@ def create_plotly_chart(
                 "'lines+markers'). MUST contain at least one trace — do NOT "
                 "call this with `data=[]`. If a data-source tool failed or "
                 "returned no rows, ABORT and report the data-fetch error to "
-                "the user; do NOT fall back to creating an empty chart."
+                "the user; do NOT fall back to creating an empty chart. "
+                "PREFER `data_uri` when the data came from a prior tool call "
+                "in this conversation — chatbox-core resolves the URI into "
+                "`data` automatically and you skip the cost of re-emitting "
+                "a large array."
             ),
             min_length=1,
         ),
-    ],
+    ] = None,
+    data_uri: Annotated[
+        Optional[Union[str, List[str]]],
+        uri_field(inline_arg_name="data"),
+    ] = None,
     layout: Annotated[Optional[Dict[str, Any]], Field(description="Plotly layout object with title, axis labels, etc.")] = None,
     config: Annotated[Optional[Dict[str, Any]], Field(description="Plotly config object (responsive, displaylogo, etc.)")] = None,
     title: Annotated[Optional[str], Field(description="Chart title (shorthand - added to layout.title)")] = None,
@@ -366,6 +377,34 @@ def create_plotly_chart(
     Returns a visualization spec that the chatbox dispatches as a grid item.
     The chart renders using TethysDash's native BasePlot component.
     """
+    # Plan 2026-05-18-002 Unit 5 — validate the exactly-one-of contract
+    # between `data` (inline) and `data_uri` (cache URI). In the mediated
+    # path, chatbox-core resolves `data_uri` into `data` BEFORE dispatch
+    # and drops the `data_uri` arg, so this server-side validator should
+    # see exactly one of the two set. Defense-in-depth for unmediated
+    # clients (Claude Desktop, mcp-cli) that don't run chatbox-core's
+    # substitution layer.
+    err = ensure_exactly_one_set(data, "data", data_uri, "data_uri")
+    if err:
+        return {"error": err}
+    if data_uri is not None:
+        # Unmediated client — server cannot resolve cache URIs (they're
+        # client-side IndexedDB keys, not server-resolvable handles).
+        return {
+            "error": (
+                "invalid_args: `data_uri` arrived unresolved at the server. "
+                "Cache URIs are resolved by chatbox-core's substitution "
+                "layer before tool dispatch — non-chatbox-core MCP clients "
+                "must pass inline `data` instead."
+            ),
+            "fix_hint": (
+                "If you're using chatbox-core, ensure `enableResultCache={true}` "
+                "is set on the <Chatbox> mount. If you're a different MCP "
+                "client (Claude Desktop, mcp-cli, custom), retry with `data` "
+                "populated inline as the structured array."
+            ),
+        }
+
     # Dict-coercion pattern (see docs/solutions/best-practices/mcp-tool-dict-parameter-coercion)
     if isinstance(data, str):
         try:
@@ -425,20 +464,28 @@ def create_plotly_chart(
 )
 def create_data_table(
     data: Annotated[
-        Union[List[Dict[str, Any]], str],
+        Optional[Union[List[Dict[str, Any]], str]],
         Field(
+            default=None,
             description=(
                 "Array of row objects. Each dict maps column names to cell "
-                "values; all rows must share the same keys. May be passed "
-                "as a JSON-string array too. MUST contain at least one row "
-                "— do NOT call this with `data=[]`. If a data-source tool "
-                "failed or returned no rows, ABORT and report the data-fetch "
-                "error to the user; do NOT fall back to creating an empty "
-                "table."
+                "values; all rows must share the same keys. MUST contain at "
+                "least one row — do NOT call this with `data=[]`. If a "
+                "data-source tool failed or returned no rows, ABORT and "
+                "report the data-fetch error to the user; do NOT fall back "
+                "to creating an empty table. "
+                "PREFER `data_uri` when the data came from a prior tool "
+                "call in this conversation — chatbox-core resolves the URI "
+                "into `data` automatically and you skip the cost of "
+                "re-emitting a large array."
             ),
             min_length=1,
         ),
-    ],
+    ] = None,
+    data_uri: Annotated[
+        Optional[Union[str, List[str]]],
+        uri_field(inline_arg_name="data"),
+    ] = None,
     title: Annotated[Optional[str], Field(description="Table title")] = None,
     subtitle: Annotated[Optional[str], Field(description="Table subtitle")] = None,
     w: Annotated[
@@ -469,6 +516,27 @@ def create_data_table(
 
     Returns a visualization spec that renders using TethysDash's native DataTable component.
     """
+    # Plan 2026-05-18-002 Unit 5 — see create_plotly_chart for the same
+    # exactly-one-of contract validation.
+    err = ensure_exactly_one_set(data, "data", data_uri, "data_uri")
+    if err:
+        return {"error": err}
+    if data_uri is not None:
+        return {
+            "error": (
+                "invalid_args: `data_uri` arrived unresolved at the server. "
+                "Cache URIs are resolved by chatbox-core's substitution "
+                "layer before tool dispatch — non-chatbox-core MCP clients "
+                "must pass inline `data` instead."
+            ),
+            "fix_hint": (
+                "If you're using chatbox-core, ensure `enableResultCache={true}` "
+                "is set on the <Chatbox> mount. If you're a different MCP "
+                "client, retry with `data` populated inline as the structured "
+                "array."
+            ),
+        }
+
     # Dict-coercion pattern (see docs/solutions/best-practices/mcp-tool-dict-parameter-coercion)
     if isinstance(data, str):
         try:
@@ -570,8 +638,15 @@ def create_card(
     data: Annotated[Optional[Any], Field(description=(
         "List of stat entries; each entry is a dict with optional `label`, "
         "`value`, `color`, and `icon`. Scalars, single dicts, and JSON-string "
-        "payloads are coerced into list-of-dict form."
+        "payloads are coerced into list-of-dict form. "
+        "PREFER `data_uri` when the data came from a prior tool call in this "
+        "conversation — chatbox-core resolves the URI into `data` "
+        "automatically and you skip the cost of re-emitting a large list."
     ))] = None,
+    data_uri: Annotated[
+        Optional[Union[str, List[str]]],
+        uri_field(inline_arg_name="data"),
+    ] = None,
     w: Annotated[
         int,
         Field(
@@ -607,6 +682,33 @@ def create_card(
     strings raise and produce an ``{"error": ...}`` envelope rather than
     silently becoming a scalar label.
     """
+    # Plan 2026-05-18-002 Unit 5 — exactly-one-of contract between `data`
+    # (inline) and `data_uri` (cache URI). For `create_card` the inline
+    # form accepts None (empty placeholder is valid) so the validator
+    # only fires when BOTH are set or when `data_uri` arrived unresolved.
+    if data is not None and data_uri is not None:
+        return {
+            "error": (
+                "invalid_args: both `data` and `data_uri` were set on the "
+                "same call. Pass EITHER inline `data` OR a `data_uri` "
+                "(mcp+cache:// URI) but not both."
+            )
+        }
+    if data_uri is not None:
+        return {
+            "error": (
+                "invalid_args: `data_uri` arrived unresolved at the server. "
+                "Cache URIs are resolved by chatbox-core's substitution "
+                "layer before tool dispatch — non-chatbox-core MCP clients "
+                "must pass inline `data` instead."
+            ),
+            "fix_hint": (
+                "If you're using chatbox-core, ensure `enableResultCache={true}` "
+                "is set on the <Chatbox> mount. If you're a different MCP "
+                "client, retry with `data` populated inline."
+            ),
+        }
+
     try:
         coerced_data = _coerce_card_data(data)
     except ValueError as exc:

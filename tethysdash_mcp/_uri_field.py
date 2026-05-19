@@ -64,17 +64,17 @@ def uri_field(
         note about array form when the tool accepts ``list[str]``).
     """
     desc = (
-        f"Optional MCP result-by-reference URI (mcp+cache://...) that "
-        f"chatbox-core substitutes into `{inline_arg_name}` before dispatch. "
-        f"Pass this in PLACE OF `{inline_arg_name}` when the data came from "
-        f"a prior tool call in the same conversation — chatbox-core surfaces "
-        f"a `_cache_uri` field on every oversized tool result that you can "
-        f"emit here. Eliminates token-by-token regeneration of large arrays. "
-        f"Use `{inline_arg_name}` directly when you have inline data or no "
-        f"cache hit. Setting BOTH this and `{inline_arg_name}` is a bug — "
-        f"chatbox-core's substitution prefers the URI and drops the inline "
-        f"value, but tool-side validation will reject both-set when the "
-        f"call reaches the server unmediated."
+        f"REQUIRED when a prior tool result in this conversation carries a "
+        f"`_cache_uri` field — pass that URI here as the value of "
+        f"`{inline_arg_name}_uri` and OMIT `{inline_arg_name}`. chatbox-core "
+        f"substitutes the cached payload into `{inline_arg_name}` before "
+        f"dispatch. Inlining `{inline_arg_name}` when `_cache_uri` is "
+        f"available is WRONG — you would retransmit kilobytes the cache "
+        f"already holds, wasting thousands of output tokens and frequently "
+        f"truncating mid-array. DO NOT retransmit data the cache already has. "
+        f"Only use `{inline_arg_name}` directly when no prior cached result "
+        f"is available. Never set BOTH `{inline_arg_name}` and "
+        f"`{inline_arg_name}_uri` — pick exactly one."
     )
     if description_suffix:
         desc = desc + " " + description_suffix

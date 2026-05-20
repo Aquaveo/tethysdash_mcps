@@ -7,6 +7,12 @@ Image tags follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **`data` field descriptions on `create_plotly_chart`, `create_data_table`, `create_card` now lead with `data_uri` as the preferred path.** Companion to chatbox-core 0.12.0's pre-dispatch inline-list cap. Small models pattern-match on the first option listed in a field description; with the inline shape leading, nemotron-class models reliably picked inline `data` even when a cached `_cache_uri` was available — triggering JSON parse errors at the ~1KB threshold (observed: nemotron-3-nano-30b on a 24-record NRDS plot, `Extra data: line 1 column 1275`, ~200s repair-loop oscillation). Each description now opens with a `PREFER data_uri ...` clause naming `_cache_uri` as the source and the small-model failure mode as the reason. Inline shape moves to a clearly-labeled "Inline shape:" section after. No contract change — inline `data` still accepted for small synthesized payloads.
+
+- **New regression test `test_data_uri_description_ordering.py`** pins the new framing: each of the three tools' `data` descriptions must (a) name `data_uri`, (b) name `_cache_uri`, (c) mention `data_uri` before the inline-shape section, (d) name the small-model failure mode. Catches future description edits that move inline back to the lead.
+
 ## [0.3.0] — 2026-05-19
 
 ### Added

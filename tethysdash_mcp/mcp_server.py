@@ -453,14 +453,23 @@ def create_plotly_chart(
         Field(
             default=None,
             description=(
-                "Array of Plotly trace objects, OR a list of data records "
-                "when `x_field` and `y_field` are provided (server pivots "
-                "records into traces). Trace objects MUST have non-empty "
-                "`x` and `y` arrays; optional `type` (default 'scatter'), "
-                "`name`, `mode`. MUST contain at least one element. "
-                "Server unwraps dict envelopes carrying a `data` / `rows` "
-                "/ `records` list, so the cache-URI substitution path "
-                "passes through cleanly."
+                "PREFER `data_uri` over inline `data` for any payload from "
+                "a query or data-source tool — pass the `_cache_uri` field "
+                "from that tool's result envelope and chatbox-core resolves "
+                "it without re-emitting the bytes. Inline `data` over ~20 "
+                "records reliably triggers JSON parse errors on small "
+                "models (chatbox-core rejects locally with an actionable "
+                "error pointing at `data_uri`). Use inline `data` only for "
+                "small synthesized payloads or trace objects you "
+                "constructed directly.\n\n"
+                "Inline shape: array of Plotly trace objects, OR a list of "
+                "data records when `x_field` and `y_field` are provided "
+                "(server pivots records into traces). Trace objects MUST "
+                "have non-empty `x` and `y` arrays; optional `type` "
+                "(default 'scatter'), `name`, `mode`. MUST contain at "
+                "least one element. Server unwraps dict envelopes carrying "
+                "a `data` / `rows` / `records` list, so the cache-URI "
+                "substitution path passes through cleanly."
             ),
             min_length=1,
         ),
@@ -703,14 +712,23 @@ def create_data_table(
         Field(
             default=None,
             description=(
-                "Array of row objects. Each dict maps column names to cell "
-                "values; all rows must share the same keys. MUST contain at "
-                "least one row — do NOT call this with `data=[]`. If a "
-                "data-source tool failed or returned no rows, ABORT and "
-                "report the data-fetch error to the user; do NOT fall back "
-                "to creating an empty table. Server unwraps dict envelopes "
-                "carrying a `data` / `rows` / `records` list, so the "
-                "cache-URI substitution path passes through cleanly."
+                "PREFER `data_uri` over inline `data` for any payload from "
+                "a query or data-source tool — pass the `_cache_uri` field "
+                "from that tool's result envelope and chatbox-core resolves "
+                "it without re-emitting the bytes. Inline `data` over ~20 "
+                "rows reliably triggers JSON parse errors on small models "
+                "(chatbox-core rejects locally with an actionable error "
+                "pointing at `data_uri`). Use inline `data` only for small "
+                "synthesized tables.\n\n"
+                "Inline shape: array of row objects. Each dict maps column "
+                "names to cell values; all rows must share the same keys. "
+                "MUST contain at least one row — do NOT call this with "
+                "`data=[]`. If a data-source tool failed or returned no "
+                "rows, ABORT and report the data-fetch error to the user; "
+                "do NOT fall back to creating an empty table. Server "
+                "unwraps dict envelopes carrying a `data` / `rows` / "
+                "`records` list, so the cache-URI substitution path passes "
+                "through cleanly."
             ),
             min_length=1,
         ),
@@ -892,12 +910,16 @@ def create_card(
     title: Annotated[str, Field(description="Card title")],
     description: Annotated[Optional[str], Field(description="Card description text")] = None,
     data: Annotated[Optional[Any], Field(description=(
-        "List of stat entries; each entry is a dict with optional `label`, "
-        "`value`, `color`, and `icon`. Scalars, single dicts, and JSON-string "
-        "payloads are coerced into list-of-dict form. "
-        "PREFER `data_uri` when the data came from a prior tool call in this "
-        "conversation — chatbox-core resolves the URI into `data` "
-        "automatically and you skip the cost of re-emitting a large list."
+        "PREFER `data_uri` over inline `data` when the data came from a "
+        "prior tool call — pass the `_cache_uri` field from that tool's "
+        "result envelope and chatbox-core resolves it without re-emitting "
+        "the list. Inline `data` over ~20 entries reliably triggers JSON "
+        "parse errors on small models (chatbox-core rejects locally). "
+        "Small synthesized stat tiles (1-5 entries) are fine inline.\n\n"
+        "Inline shape: list of stat entries; each entry is a dict with "
+        "optional `label`, `value`, `color`, and `icon`. Scalars, single "
+        "dicts, and JSON-string payloads are coerced into list-of-dict "
+        "form."
     ))] = None,
     data_uri: Annotated[
         Optional[Union[str, List[str]]],

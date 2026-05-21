@@ -2060,6 +2060,21 @@ def add_esri_image_layer(
     attr_key = name
     if attribute_variables:
         effective_layer_id = flat_source_props.get("params", {}).get("LAYERS")
+        if effective_layer_id is None:
+            # LAYERDEFS encodes the sublayer ID as the prefix before the
+            # first colon: "<layer_id>:<where_clause>" (e.g.,
+            # "0:rivercountry = 'China'"). When the LLM sets LAYERDEFS but
+            # not LAYERS or the layer_id arg, derive the layer index from
+            # LAYERDEFS so the ?f=json lookup can resolve the actual ESRI
+            # sublayer name. Without this fallback, attributeVariables ends
+            # up keyed by the user-facing display name (the `name` arg),
+            # while the React popup-render path queries by the ESRI
+            # service's sublayer name — silent click-time lookup failure.
+            layerdefs = flat_source_props.get("params", {}).get("LAYERDEFS")
+            if isinstance(layerdefs, str) and ":" in layerdefs:
+                candidate = layerdefs.split(":", 1)[0].strip()
+                if candidate.isdigit():
+                    effective_layer_id = candidate
         resolved = _resolve_esri_layer_name(url, effective_layer_id)
         if resolved:
             attr_key = resolved

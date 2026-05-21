@@ -80,13 +80,11 @@ mcp = FastMCP(
     #   + The contract test
     #     `test_prompt_target_tool_is_visible_in_default_list_tools`
     #     trivially passes since every tool is visible at the server
-    #   - Plan 2026-05-07-007 (T3) found that compound prompts like
-    #     "create a map with a WMS layer" could let the 11 add_*_layer
-    #     tools dominate the embedding score, crowding out
-    #     create_map_visualization. If the Phase 3c smoke surfaces this
-    #     regression, fall back: re-introduce BM25SearchTransform with a
-    #     curated `always_visible` set or use Option C from the plan
-    #     (pin 3-4 most-common layer types only).
+    #   - Compound prompts like "create a map with a WMS layer" can let the
+    #     11 add_*_layer tools dominate the embedding score, crowding out
+    #     create_map_visualization. If that regression appears, fall back
+    #     to re-introducing BM25SearchTransform with a curated
+    #     `always_visible` set or pinning 3-4 most-common layer types only.
     middleware=[
         # Order: observability is OUTERMOST so it observes the final
         # envelope produced by InputValidationEnvelopeMiddleware
@@ -132,8 +130,8 @@ def _backend_not_configured_envelope() -> Dict[str, Any]:
 def _load_runtime_plugin_registry_http() -> List[Dict[str, Any]]:
     """Read the runtime plugin registry from tethysdash over HTTP.
 
-    Replaces the filesystem-coupled reader from the prior architecture
-    (plan 2026-05-11-006). The tethysdash side exposes the registry at
+    Replaces the filesystem-coupled reader from the prior architecture.
+    The tethysdash side exposes the registry at
     ``${TETHYSDASH_BASE_URL}/runtime-plugins/list/`` -- a sibling of the
     auth-gated ``runtime-plugins/sync/`` endpoint that powers the
     browser-side registration UI.
@@ -573,10 +571,9 @@ def create_plotly_chart(
     Returns a visualization spec that the chatbox dispatches as a grid item.
     The chart renders using TethysDash's native BasePlot component.
     """
-    # LLM-syntax-leak recovery (Plan 2026-05-18-002 Unit 5 follow-up):
-    # nemotron-3, qwen-3.5, deepseek-pro-4 all observed emitting the
-    # string "None" / "null" for Optional[Dict] args. We accept these
-    # as Union[Dict, str] then coerce back to actual None here.
+    # LLM-syntax-leak recovery: some models emit the literal string
+    # "None" / "null" for Optional[Dict] args. Accept as Union[Dict, str]
+    # then coerce back to actual None here.
     layout = _coerce_none_string(layout)
     config = _coerce_none_string(config)
     # JSON-string acceptance for layout/config (matches the existing
@@ -593,12 +590,11 @@ def create_plotly_chart(
         except json.JSONDecodeError as e:
             return {"error": f"invalid_args: `config` is not valid JSON: {e}"}
 
-    # Plan 2026-05-18-002 Unit 5 — validate the exactly-one-of contract
-    # between `data` (inline) and `data_uri` (cache URI). In the mediated
-    # path, chatbox-core resolves `data_uri` into `data` BEFORE dispatch
-    # and drops the `data_uri` arg, so this server-side validator should
-    # see exactly one of the two set. Defense-in-depth for unmediated
-    # clients (Claude Desktop, mcp-cli) that don't run chatbox-core's
+    # Validate the exactly-one-of contract between `data` (inline) and
+    # `data_uri` (cache URI). In the mediated path, chatbox-core resolves
+    # `data_uri` into `data` BEFORE dispatch and drops the `data_uri` arg,
+    # so this validator should see exactly one of the two set.
+    # Defense-in-depth for unmediated clients that don't run chatbox-core's
     # substitution layer.
     err = ensure_exactly_one_set(data, "data", data_uri, "data_uri")
     if err:
@@ -615,9 +611,8 @@ def create_plotly_chart(
             ),
             "fix_hint": (
                 "If you're using chatbox-core, ensure `enableResultCache={true}` "
-                "is set on the <Chatbox> mount. If you're a different MCP "
-                "client (Claude Desktop, mcp-cli, custom), retry with `data` "
-                "populated inline as the structured array."
+                "is set on the <Chatbox> mount. Other MCP clients must retry "
+                "with `data` populated inline as the structured array."
             ),
         }
 
@@ -771,8 +766,7 @@ def create_data_table(
 
     Returns a visualization spec that renders using TethysDash's native DataTable component.
     """
-    # Plan 2026-05-18-002 Unit 5 — see create_plotly_chart for the same
-    # exactly-one-of contract validation.
+    # See create_plotly_chart for the same exactly-one-of contract.
     err = ensure_exactly_one_set(data, "data", data_uri, "data_uri")
     if err:
         return {"error": err}
@@ -967,10 +961,10 @@ def create_card(
     strings raise and produce an ``{"error": ...}`` envelope rather than
     silently becoming a scalar label.
     """
-    # Plan 2026-05-18-002 Unit 5 — exactly-one-of contract between `data`
-    # (inline) and `data_uri` (cache URI). For `create_card` the inline
-    # form accepts None (empty placeholder is valid) so the validator
-    # only fires when BOTH are set or when `data_uri` arrived unresolved.
+    # Exactly-one-of contract between `data` (inline) and `data_uri` (cache
+    # URI). For `create_card` the inline form accepts None (empty placeholder
+    # is valid) so the validator only fires when BOTH are set or when
+    # `data_uri` arrived unresolved.
     if data is not None and data_uri is not None:
         return {
             "error": (
@@ -1404,8 +1398,8 @@ _LAYER_PROP_BUILDER_METHODS = {
     "minZoom": "set_min_zoom",
     "maxZoom": "set_max_zoom",
     "minZoomQuery": "set_min_zoom_query",
-    # Plan 2026-05-07-004 Unit C — paired with LAYER_PROPERTIES_ALLOWLIST
-    # in plugin_helpers.py. Drift test enforces parity.
+    # Paired with LAYER_PROPERTIES_ALLOWLIST in plugin_helpers.py.
+    # Drift test enforces parity.
     "visible": "set_layer_visibility",
 }
 
@@ -1415,13 +1409,12 @@ def _validate_uuid_arg(
 ) -> Optional[str]:
     """Validate that ``value`` is a well-formed UUID string.
 
-    Plan 2026-05-07-002 Unit A. Some LLMs (observed: gemma4:31b) emit
-    Mustache-style template placeholders like ``{{last_map_uuid}}`` for
-    chained tool args, expecting the host framework to substitute the
-    prior tool's return value. MCP doesn't do this. Without validation
-    the literal string passes through and the layer/patch is silently
-    dropped downstream when the dispatcher can't find a matching grid
-    item.
+    Some LLMs (observed: gemma4:31b) emit Mustache-style template
+    placeholders like ``{{last_map_uuid}}`` for chained tool args,
+    expecting the host framework to substitute the prior tool's return
+    value. MCP doesn't do this. Without validation the literal string
+    passes through and the layer/patch is silently dropped downstream
+    when the dispatcher can't find a matching grid item.
 
     Returns ``None`` on success or a structured error string the caller
     wraps in ``{"error": ...}``. The string is always prefixed
@@ -1457,8 +1450,7 @@ def _validate_uuid_arg(
 def _validate_source_params(
     source_type: str, params: Optional[Dict[str, Any]]
 ) -> Optional[str]:
-    """Plan 2026-05-07-004 Unit A: reject `params` for source types that
-    don't consume it.
+    """Reject `params` for source types that don't consume it.
 
     The producer's per-source-type ``_flat_source_props`` build (lines
     ~1148-1231 of this file) only handles ``params`` for WMS, ESRI Image
@@ -1621,14 +1613,12 @@ VALID_SOURCE_TYPES = [
     "Static Image",
 ]
 
-# Plan 2026-05-07-004 Unit A: source types that don't consume `params`
-# server-side. Pre-fix, calls supplying `params` for these types were
-# silently dropped — the renderer never saw the keys and the LLM had no
-# indication. Now `_validate_source_params` rejects with a structured
-# `invalid_source_params:` envelope so the LLM can correct on the next
-# round. If a future feature adds per-type `params` semantics for one of
-# these (e.g., GeoJSON style overrides, KML extractStyles), remove it
-# from this set in the same change that wires the consumption path.
+# Source types that don't consume `params` server-side. Calls supplying
+# `params` for these types are rejected via `_validate_source_params` with
+# a structured `invalid_source_params:` envelope so the LLM can correct
+# on the next round. If a future feature adds per-type `params` semantics
+# (e.g., GeoJSON style overrides, KML extractStyles), remove it from this
+# set in the same change that wires the consumption path.
 _TYPES_REJECTING_PARAMS = frozenset({
     "GeoJSON",
     "KML",
@@ -1686,22 +1676,17 @@ def _resolve_esri_layer_name(url: str, layer_id: Optional[str]) -> Optional[str]
 
 
 # ---------------------------------------------------------------------------
-# Plan 2026-05-07-007 (T3): per-source-type map-layer tools.
+# Per-source-type map-layer tools.
 #
 # These 11 tools replace the umbrella `add_map_service_layer`. Each has a
 # flat narrow signature whose required + optional fields match exactly that
 # source type's entry in `available_source_properties` (plugin_helpers.py).
-# The conditional schema the LLM had to reason about under the umbrella is
-# gone — the MCP catalog itself now is the per-type contract.
+# The MCP catalog itself is the per-type contract.
 #
-# Implementation note vs plan K7: the plan estimated the shared post-routing
-# block at ~47 lines and prescribed inlining it across 11 tools. The actual
-# block is ~87 lines (see umbrella history). Inlining 87 lines × 11 tools
-# would be ~957 lines of duplicated code with high copy-paste-error risk.
-# We deviate to a module-private helper `_apply_common_layer_options` that
-# preserves K7's spirit (no public abstraction, no new test file, helper
-# exercised end-to-end through every tool's per-tool oracle tests) without
-# paying the duplication cost.
+# Shared post-routing is factored into `_apply_common_layer_options` rather
+# than inlined per-tool to avoid ~957 lines of duplicated code with high
+# copy-paste-error risk. The helper is exercised end-to-end through every
+# tool's per-tool oracle tests.
 # ---------------------------------------------------------------------------
 
 
@@ -2914,9 +2899,10 @@ def add_static_image_layer(
 
 
 # ---------------------------------------------------------------------------
-# (Reserved space — `add_map_service_layer` umbrella was deleted here per
-# Plan 2026-05-07-007. Tests previously targeting the umbrella have been
-# migrated to per-tool oracle tests in test_per_source_type_layer_tools.py.)
+# (Reserved space — `add_map_service_layer` umbrella was deleted here when
+# per-source-type tools replaced it. Tests previously targeting the umbrella
+# have been migrated to per-tool oracle tests in
+# test_per_source_type_layer_tools.py.)
 # ---------------------------------------------------------------------------
 
 
@@ -3292,10 +3278,9 @@ def patch_visualization(
     Returns `{error: "..."}` with a structured error class prefix on failure:
     `invalid_envelope`, `whitelist_rejected`, `invalid_uuid`.
     """
-    # Plan 2026-05-07-002 Unit A: reject template placeholders / malformed
-    # UUIDs before any other work. Cheapest reject; most actionable error
-    # for the LLM (the prior tool's create_* return value is the recovery
-    # source of truth).
+    # Reject template placeholders / malformed UUIDs before any other work.
+    # Cheapest reject; most actionable error for the LLM (the prior tool's
+    # create_* return value is the recovery source of truth).
     uuid_error = _validate_uuid_arg(
         uuid,
         "uuid",
@@ -3696,9 +3681,8 @@ def add_dynamic_map_layer(
     fetch failures surface through Map.js's existing visualization-error
     path (no new error handling here).
     """
-    # Plan 2026-05-07-002 Unit A: same UUID validation as
-    # add_map_service_layer — reject template placeholders / malformed UUIDs
-    # at the boundary.
+    # Same UUID validation as the per-source-type add_* tools — reject
+    # template placeholders / malformed UUIDs at the boundary.
     uuid_error = _validate_uuid_arg(
         map_uuid, "map_uuid", "create_map_visualization"
     )
@@ -4058,7 +4042,7 @@ def register_runtime_plugin(
     authenticated write path; registration must go through the browser-
     side chatbox UI (which posts to tethysdash's ``runtime-plugins/sync/``
     endpoint with the user's session credential). Re-enables once auth
-    plus a write-side HTTP path land -- see plan 2026-05-11-004 (deferred).
+    plus a write-side HTTP path land (deferred).
 
     The arguments are preserved on the tool signature so the prompt /
     slash-command surface (``test_prompts.py`` parity contract) keeps

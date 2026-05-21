@@ -582,11 +582,31 @@ class TestToolDescription:
         by_name = {t.name: (t.description or "") for t in tools}
         return by_name["configure_popup_modal_layer"]
 
-    def test_description_names_mutual_exclusion(self, description):
-        """Per feedback_create_patch_mutual_exclusion.md."""
+    def test_description_leads_with_positive_use(self, description):
+        """Description must lead with FIRST-TIME setup framing.
+
+        Debug session 2026-05-21 turn 2: gemini-flash read the prior
+        exclusion-first phrasing ("DO NOT use this tool to edit...") as
+        "don't use configure_popup_modal_layer for anything that touches
+        an existing layer" and routed to patch_visualization. Positive-
+        first framing fixes this.
+        """
         d = description.lower()
-        assert "do not use this tool to edit" in d
+        assert "use this tool for first-time popup-modal setup" in d, (
+            "Description must lead with the positive use case so the LLM "
+            "picks this tool for first-time popup-modal setup."
+        )
+
+    def test_description_names_patch_visualization_carveout(self, description):
+        """Partial-edits-only clause for patch_visualization survives."""
+        d = description.lower()
+        # The patch_visualization carve-out must be present, but it must
+        # NOT be the leading framing (covered by test_description_leads_with_positive_use).
         assert "patch_visualization" in description
+        assert (
+            "use patch_visualization only for partial edits" in d
+            or "only for partial edits to an already-existing" in d
+        )
 
     def test_description_names_same_turn_race_constraint(self, description):
         """KTD #6 / Unit 2 test scenario."""

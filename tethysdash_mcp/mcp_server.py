@@ -3459,10 +3459,26 @@ def _popup_validation_error_envelope(ve: ValidationError) -> Dict[str, Any]:
 @mcp.tool(
     name="configure_popup_modal_layer",
     description=(
-        "Configure a custom popup modal on an existing map layer. Use when "
-        "the user wants a click-popup that renders embedded visualizations "
-        "(plots, tables, cards, text) with feature-attribute-substituted "
-        "props, instead of (or alongside) the default attribute-table popup. "
+        "USE THIS TOOL for FIRST-TIME popup-modal setup on a map layer. "
+        "It is THE correct tool whenever the user asks to 'enable', 'add', "
+        "'configure', 'create', or 'set up' a Custom Popup Modal on an "
+        "existing map layer — even though the map layer itself already "
+        "exists. Adding a popupConfig to a layer for the first time is "
+        "NOT 'modifying an existing visualization' in the patch_visualization "
+        "sense; it's a structured setup operation with its own tool. "
+        "DO NOT use patch_visualization to add a popupConfig from scratch — "
+        "the popupConfig shape is non-trivial (mode, position, titleTemplate, "
+        "gridItems with source/args/x/y/w/h), the canonical path is "
+        "/args/layers/N/popupConfig (not /args/layers/N/configuration/...), "
+        "and this tool builds the persisted shape correctly. "
+        "Use patch_visualization ONLY for partial edits to an ALREADY-EXISTING "
+        "popupConfig (e.g., changing just the titleTemplate via "
+        "/args/layers/N/popupConfig/titleTemplate). Re-calling this tool "
+        "REPLACES the entire popupConfig including all gridItem UUIDs. "
+        "What it does: builds a custom click-popup that renders embedded "
+        "visualizations (plots, tables, cards, text) with feature-attribute-"
+        "substituted props, instead of (or alongside) the default attribute-"
+        "table popup. "
         "Required: map_uuid (from create_map_visualization or dashboard_state), "
         "layer_index (0-based index into the map's layers, read from "
         "dashboard_state), and popup_config. Returns a patch_update envelope "
@@ -3477,11 +3493,7 @@ def _popup_validation_error_envelope(ve: ValidationError) -> Dict[str, Any]:
         "popup-render time; missing keys resolve to empty string. "
         "Discover valid gridItem source names via list_available_visualizations "
         "(Default registry — Map, Text, Card, etc.), list_intake_plugins "
-        "(intake-backed plugins), or register_runtime_plugin (runtime/MFE plugins). "
-        "DO NOT use this tool to edit fields on an existing popupConfig — use "
-        "patch_visualization on the specific sub-path (e.g., "
-        "/args/layers/N/popupConfig/titleTemplate) instead. Re-calling this "
-        "tool REPLACES the entire popupConfig including all gridItem UUIDs."
+        "(intake-backed plugins), or register_runtime_plugin (runtime/MFE plugins)."
     ),
     tags=["map", "layer", "popup", "modal", "configure", "click", "feature"],
 )

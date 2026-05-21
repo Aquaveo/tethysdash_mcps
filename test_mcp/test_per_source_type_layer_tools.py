@@ -406,6 +406,125 @@ class TestAddEsriImageLayer:
         assert "My Display Name" not in layer["attributeVariables"]
         assert layer["attributeVariables"]["River Gauges"] == {"STAGE": "stage_var"}
 
+    # Debug session 2026-05-21 turn 1 (real user prompt): LLM emitted
+    # add_esri_image_layer with params={"LAYERDEFS": "0:rivercountry = 'China'"}
+    # and attribute_variables — but no `layer_id` arg and no `params.LAYERS`.
+    # _resolve_esri_layer_name was called with `effective_layer_id=None`
+    # (because LAYERS was absent) → returned None immediately → server fell
+    # back to the display name. Result: attributeVariables was keyed by the
+    # display name, but the React popup-render path queries by the ESRI
+    # service's actual sublayer name fetched from ?f=json → silent lookup
+    # miss → "Variable Input Name" column empty at runtime.
+    #
+    # Fix: when LAYERS is absent, extract the layer index from LAYERDEFS
+    # (which encodes sublayer ID as the prefix before the first colon).
+
+    @patch(
+        "tethysdash_mcp.mcp_server._resolve_esri_layer_name",
+        return_value="Flow Forecast",
+    )
+    def test_layerdefs_only_resolves_attribute_variables_key(self, mock_resolve):
+        """LAYERDEFS-only path (no LAYERS, no layer_id) extracts layer ID and resolves."""
+        result = add_esri_image_layer(
+            map_uuid=MAP_UUID,
+            name="Bolivia Flowlines",
+            url="https://example.com/arcgis/rest/services/MyService/MapServer",
+            params={"LAYERDEFS": "0:rivercountry = 'Bolivia'"},
+            attribute_variables={"comid": "River ID"},
+        )
+        layer = _get_layer_config(result)
+        # Resolver was called with the layer index "0" extracted from LAYERDEFS.
+        mock_resolve.assert_called_once_with(
+            "https://example.com/arcgis/rest/services/MyService/MapServer", "0"
+        )
+        # Persisted key uses the resolved sublayer name, not the display name.
+        assert "Flow Forecast" in layer["attributeVariables"]
+        assert "Bolivia Flowlines" not in layer["attributeVariables"]
+        assert layer["attributeVariables"]["Flow Forecast"] == {"comid": "River ID"}
+
+    @patch(
+        "tethysdash_mcp.mcp_server._resolve_esri_layer_name",
+        return_value="Flow Forecast",
+    )
+    def test_layerdefs_with_space_after_colon(self, mock_resolve):
+        """LAYERDEFS="0: <where_clause>" (space after colon) still extracts "0"."""
+        result = add_esri_image_layer(
+            map_uuid=MAP_UUID,
+            name="Bolivia Flowlines",
+            url="https://example.com/arcgis/rest/services/MyService/MapServer",
+            params={"LAYERDEFS": "0: rivercountry = 'Bolivia'"},
+            attribute_variables={"comid": "River ID"},
+        )
+        mock_resolve.assert_called_once_with(
+            "https://example.com/arcgis/rest/services/MyService/MapServer", "0"
+        )
+        layer = _get_layer_config(result)
+        assert layer["attributeVariables"]["Flow Forecast"] == {"comid": "River ID"}
+
+    @patch(
+        "tethysdash_mcp.mcp_server._resolve_esri_layer_name",
+        return_value=None,
+    )
+    def test_layerdefs_only_resolver_fails_falls_back_to_display_name(
+        self, mock_resolve
+    ):
+        """When LAYERDEFS-derived resolver returns None, fallback to display name (regression preservation)."""
+        result = add_esri_image_layer(
+            map_uuid=MAP_UUID,
+            name="Bolivia Flowlines",
+            url="https://example.com/arcgis/rest/services/MyService/MapServer",
+            params={"LAYERDEFS": "0:rivercountry = 'Bolivia'"},
+            attribute_variables={"comid": "River ID"},
+        )
+        # Resolver IS called with the extracted "0" (didn't pass None).
+        mock_resolve.assert_called_once_with(
+            "https://example.com/arcgis/rest/services/MyService/MapServer", "0"
+        )
+        layer = _get_layer_config(result)
+        # Resolver returned None → fallback to display name (current behavior).
+        assert "Bolivia Flowlines" in layer["attributeVariables"]
+
+    @patch(
+        "tethysdash_mcp.mcp_server._resolve_esri_layer_name",
+        return_value="From LAYERS",
+    )
+    def test_layers_and_layerdefs_both_present_layers_wins(self, mock_resolve):
+        """When both LAYERS and LAYERDEFS are set, LAYERS takes precedence for layer-ID extraction."""
+        result = add_esri_image_layer(
+            map_uuid=MAP_UUID,
+            name="My Display Name",
+            url="https://example.com/arcgis/rest/services/MyService/MapServer",
+            layer_id="5",  # Will canonicalize to "show:5" in LAYERS
+            params={"LAYERDEFS": "0:rivercountry = 'X'"},
+            attribute_variables={"comid": "River ID"},
+        )
+        # Resolver got "show:5" (from LAYERS), not "0" (from LAYERDEFS).
+        mock_resolve.assert_called_once_with(
+            "https://example.com/arcgis/rest/services/MyService/MapServer", "show:5"
+        )
+        layer = _get_layer_config(result)
+        assert layer["attributeVariables"]["From LAYERS"] == {"comid": "River ID"}
+
+    @patch(
+        "tethysdash_mcp.mcp_server._resolve_esri_layer_name",
+        return_value="Flow Forecast",
+    )
+    def test_layerdefs_non_digit_prefix_no_extraction(self, mock_resolve):
+        """LAYERDEFS with a non-digit prefix (e.g., raw filter string) → resolver gets None."""
+        result = add_esri_image_layer(
+            map_uuid=MAP_UUID,
+            name="Bolivia Flowlines",
+            url="https://example.com/arcgis/rest/services/MyService/MapServer",
+            params={"LAYERDEFS": "rivercountry = 'Bolivia'"},  # no "<id>:" prefix
+            attribute_variables={"comid": "River ID"},
+        )
+        # The colon-less LAYERDEFS shouldn't be parsed as a layer ID; resolver
+        # is called with None. The resolver mock returns "Flow Forecast" but
+        # only if called with a real id — we test the call signature.
+        mock_resolve.assert_called_once_with(
+            "https://example.com/arcgis/rest/services/MyService/MapServer", None
+        )
+
     def test_canonicalizes_integer_layers_value(self):
         """Non-string LAYERS value (e.g., LLM passing integer) is coerced and canonicalized."""
         result = add_esri_image_layer(

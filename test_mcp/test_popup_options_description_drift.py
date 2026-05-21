@@ -97,3 +97,27 @@ def test_popup_options_description_names_omit_keyword(
         f"tool {tool_name!r} popup_options description doesn't name 'omit'. "
         f"Current: {description!r}."
     )
+
+
+@pytest.mark.parametrize("tool_name", TOOLS_WITH_POPUP_OPTIONS)
+def test_popup_options_description_anchors_outer_key_to_name_arg(
+    tool_input_schemas: dict, tool_name: str
+):
+    """The outer-key/`name`-arg binding must be explicit.
+
+    Debug session 2026-05-21 turn 2: gemini-flash emitted
+    ``popup_options.aliases = {"0": {"comid": "River ID"}}`` on an
+    ESRI Image layer call, because it conflated "layer ID" (the
+    sublayer index from params.LAYERDEFS) with the outer-key shape's
+    ``layer_name`` slot. The React popup-render path keys by layer
+    name, so the alias silently never fired. This test pins the
+    anchoring text that tells the LLM to use the `name` arg.
+    """
+    schema = tool_input_schemas[tool_name]
+    description = schema["properties"]["popup_options"].get("description", "")
+    assert "`name` arg" in description, (
+        f"tool {tool_name!r} popup_options description doesn't anchor the "
+        f"outer layer_name key to the `name` arg. Current: {description!r}. "
+        f"Add language naming the binding so LLMs don't fall back to "
+        f"sublayer IDs."
+    )

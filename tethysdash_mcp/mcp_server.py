@@ -1760,8 +1760,12 @@ def _apply_common_layer_options(
     if attribute_variables:
         for key, variable in attribute_variables.items():
             builder.add_attribute_variable(key, variable, attr_key)
-    _popup_aliases = (popup_options or {}).get("aliases") or {}
-    _popup_omit = (popup_options or {}).get("omit") or {}
+    _popup_aliases = _normalize_popup_outer_keys(
+        (popup_options or {}).get("aliases") or {}, attr_key, "aliases"
+    )
+    _popup_omit = _normalize_popup_outer_keys(
+        (popup_options or {}).get("omit") or {}, attr_key, "omit"
+    )
     for layer_name, alias_map in _popup_aliases.items():
         if not isinstance(alias_map, dict):
             raise ValueError(
@@ -1778,6 +1782,49 @@ def _apply_common_layer_options(
             )
         for field in fields:
             builder.omit_popup_attribute(field, layer_name)
+
+
+def _normalize_popup_outer_keys(
+    sub_dict: Dict[str, Any], layer_name: str, kind: str
+) -> Dict[str, Any]:
+    """Rewrite a single-entry popup sub-dict's outer key to match ``layer_name``.
+
+    LLM behavior tolerance: when ``add_*_layer`` adds a single layer named
+    ``layer_name``, but ``popup_options.aliases`` or ``popup_options.omit``
+    is keyed by something other than the layer's name (e.g., ``"0"`` —
+    a sublayer ID from ``params.LAYERDEFS`` — or the literal placeholder
+    ``"layer_name"`` from a description-shape copy), rewrite the key.
+
+    The React popup-render path (`reactapp/components/visualizations/Map.js`)
+    looks up alias maps by **layer name** (the value passed via the tool's
+    ``name`` arg). A mismatched outer key means the alias silently never
+    fires at click time.
+
+    Rules:
+    * Empty dict -> return as-is.
+    * Single-entry dict with key != ``layer_name`` -> rewrite to
+      ``{layer_name: <inner>}``. Tag the call for log/debug visibility.
+    * Multi-entry dict OR single-entry dict whose key already matches
+      ``layer_name`` -> return as-is. Multi-entry case preserves the
+      caller's apparent intent of authoring popups across multiple
+      layers in one call, though that path is unusual for add_*_layer.
+
+    ``kind`` is a label used in the debug log line (``"aliases"`` /
+    ``"omit"``) so the rewrite is grep-able if it ever surprises a caller.
+    """
+    if not sub_dict:
+        return sub_dict
+    if len(sub_dict) != 1:
+        return sub_dict
+    only_key = next(iter(sub_dict))
+    if only_key == layer_name:
+        return sub_dict
+    LOGGER.debug(
+        "popup_options.%s outer key %r != layer name %r; rewriting "
+        "to use the layer name (LLM tolerance).",
+        kind, only_key, layer_name,
+    )
+    return {layer_name: sub_dict[only_key]}
 
 
 # ---------------------------------------------------------------------------
@@ -1841,7 +1888,12 @@ def add_wms_layer(
     ))] = None,
     popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description=(
         "Click-popup options. Accepts {'aliases': {layer_name: {field: alias}}} "
-        "and {'omit': {layer_name: [field, ...]}} sub-dicts."
+        "and {'omit': {layer_name: [field, ...]}} sub-dicts. The outer "
+        "layer_name key MUST be the same string passed as this tool's `name` "
+        "arg (the layer's display name) — NOT a sublayer ID from params, "
+        "params.LAYERDEFS, layer_id, or any other identifier. The server "
+        "auto-corrects single-entry sub-dicts with mismatched outer keys, "
+        "but the LLM should still emit the correct shape."
     ))] = None,
 ) -> Dict[str, Any]:
     """Add a WMS service layer to an existing map."""
@@ -1950,7 +2002,12 @@ def add_esri_image_layer(
     layer_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced layer-level props")] = None,
     popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description=(
         "Click-popup options. Accepts {'aliases': {layer_name: {field: alias}}} "
-        "and {'omit': {layer_name: [field, ...]}} sub-dicts."
+        "and {'omit': {layer_name: [field, ...]}} sub-dicts. The outer "
+        "layer_name key MUST be the same string passed as this tool's `name` "
+        "arg (the layer's display name) — NOT a sublayer ID from params, "
+        "params.LAYERDEFS, layer_id, or any other identifier. The server "
+        "auto-corrects single-entry sub-dicts with mismatched outer keys, "
+        "but the LLM should still emit the correct shape."
     ))] = None,
 ) -> Dict[str, Any]:
     """Add an ESRI Image and Map Service layer to an existing map."""
@@ -2073,7 +2130,12 @@ def add_esri_feature_layer(
     layer_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced layer-level props")] = None,
     popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description=(
         "Click-popup options. Accepts {'aliases': {layer_name: {field: alias}}} "
-        "and {'omit': {layer_name: [field, ...]}} sub-dicts."
+        "and {'omit': {layer_name: [field, ...]}} sub-dicts. The outer "
+        "layer_name key MUST be the same string passed as this tool's `name` "
+        "arg (the layer's display name) — NOT a sublayer ID from params, "
+        "params.LAYERDEFS, layer_id, or any other identifier. The server "
+        "auto-corrects single-entry sub-dicts with mismatched outer keys, "
+        "but the LLM should still emit the correct shape."
     ))] = None,
 ) -> Dict[str, Any]:
     """Add an ESRI Feature Service layer to an existing map."""
@@ -2180,7 +2242,12 @@ def add_geojson_layer(
     layer_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced layer-level props")] = None,
     popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description=(
         "Click-popup options. Accepts {'aliases': {layer_name: {field: alias}}} "
-        "and {'omit': {layer_name: [field, ...]}} sub-dicts."
+        "and {'omit': {layer_name: [field, ...]}} sub-dicts. The outer "
+        "layer_name key MUST be the same string passed as this tool's `name` "
+        "arg (the layer's display name) — NOT a sublayer ID from params, "
+        "params.LAYERDEFS, layer_id, or any other identifier. The server "
+        "auto-corrects single-entry sub-dicts with mismatched outer keys, "
+        "but the LLM should still emit the correct shape."
     ))] = None,
 ) -> Dict[str, Any]:
     """Add a GeoJSON layer to an existing map."""
@@ -2310,7 +2377,12 @@ def add_kml_layer(
     layer_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced layer-level props")] = None,
     popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description=(
         "Click-popup options. Accepts {'aliases': {layer_name: {field: alias}}} "
-        "and {'omit': {layer_name: [field, ...]}} sub-dicts."
+        "and {'omit': {layer_name: [field, ...]}} sub-dicts. The outer "
+        "layer_name key MUST be the same string passed as this tool's `name` "
+        "arg (the layer's display name) — NOT a sublayer ID from params, "
+        "params.LAYERDEFS, layer_id, or any other identifier. The server "
+        "auto-corrects single-entry sub-dicts with mismatched outer keys, "
+        "but the LLM should still emit the correct shape."
     ))] = None,
 ) -> Dict[str, Any]:
     """Add a KML layer to an existing map."""
@@ -2389,7 +2461,12 @@ def add_image_tile_layer(
     layer_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced layer-level props")] = None,
     popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description=(
         "Click-popup options. Accepts {'aliases': {layer_name: {field: alias}}} "
-        "and {'omit': {layer_name: [field, ...]}} sub-dicts."
+        "and {'omit': {layer_name: [field, ...]}} sub-dicts. The outer "
+        "layer_name key MUST be the same string passed as this tool's `name` "
+        "arg (the layer's display name) — NOT a sublayer ID from params, "
+        "params.LAYERDEFS, layer_id, or any other identifier. The server "
+        "auto-corrects single-entry sub-dicts with mismatched outer keys, "
+        "but the LLM should still emit the correct shape."
     ))] = None,
 ) -> Dict[str, Any]:
     """Add an Image Tile layer to an existing map."""
@@ -2473,7 +2550,12 @@ def add_vector_tile_layer(
     layer_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced layer-level props")] = None,
     popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description=(
         "Click-popup options. Accepts {'aliases': {layer_name: {field: alias}}} "
-        "and {'omit': {layer_name: [field, ...]}} sub-dicts."
+        "and {'omit': {layer_name: [field, ...]}} sub-dicts. The outer "
+        "layer_name key MUST be the same string passed as this tool's `name` "
+        "arg (the layer's display name) — NOT a sublayer ID from params, "
+        "params.LAYERDEFS, layer_id, or any other identifier. The server "
+        "auto-corrects single-entry sub-dicts with mismatched outer keys, "
+        "but the LLM should still emit the correct shape."
     ))] = None,
 ) -> Dict[str, Any]:
     """Add a Vector Tile layer to an existing map."""
@@ -2553,7 +2635,12 @@ def add_pmtiles_vector_layer(
     layer_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced layer-level props")] = None,
     popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description=(
         "Click-popup options. Accepts {'aliases': {layer_name: {field: alias}}} "
-        "and {'omit': {layer_name: [field, ...]}} sub-dicts."
+        "and {'omit': {layer_name: [field, ...]}} sub-dicts. The outer "
+        "layer_name key MUST be the same string passed as this tool's `name` "
+        "arg (the layer's display name) — NOT a sublayer ID from params, "
+        "params.LAYERDEFS, layer_id, or any other identifier. The server "
+        "auto-corrects single-entry sub-dicts with mismatched outer keys, "
+        "but the LLM should still emit the correct shape."
     ))] = None,
 ) -> Dict[str, Any]:
     """Add a PMTiles Vector layer to an existing map."""
@@ -2632,7 +2719,12 @@ def add_pmtiles_raster_layer(
     layer_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced layer-level props")] = None,
     popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description=(
         "Click-popup options. Accepts {'aliases': {layer_name: {field: alias}}} "
-        "and {'omit': {layer_name: [field, ...]}} sub-dicts."
+        "and {'omit': {layer_name: [field, ...]}} sub-dicts. The outer "
+        "layer_name key MUST be the same string passed as this tool's `name` "
+        "arg (the layer's display name) — NOT a sublayer ID from params, "
+        "params.LAYERDEFS, layer_id, or any other identifier. The server "
+        "auto-corrects single-entry sub-dicts with mismatched outer keys, "
+        "but the LLM should still emit the correct shape."
     ))] = None,
 ) -> Dict[str, Any]:
     """Add a PMTiles Raster layer to an existing map."""
@@ -2733,7 +2825,12 @@ def add_geotiff_layer(
     layer_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced layer-level props")] = None,
     popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description=(
         "Click-popup options. Accepts {'aliases': {layer_name: {field: alias}}} "
-        "and {'omit': {layer_name: [field, ...]}} sub-dicts."
+        "and {'omit': {layer_name: [field, ...]}} sub-dicts. The outer "
+        "layer_name key MUST be the same string passed as this tool's `name` "
+        "arg (the layer's display name) — NOT a sublayer ID from params, "
+        "params.LAYERDEFS, layer_id, or any other identifier. The server "
+        "auto-corrects single-entry sub-dicts with mismatched outer keys, "
+        "but the LLM should still emit the correct shape."
     ))] = None,
 ) -> Dict[str, Any]:
     """Add a GeoTIFF raster layer to an existing map."""
@@ -2873,7 +2970,12 @@ def add_static_image_layer(
     layer_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced layer-level props")] = None,
     popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description=(
         "Click-popup options. Accepts {'aliases': {layer_name: {field: alias}}} "
-        "and {'omit': {layer_name: [field, ...]}} sub-dicts."
+        "and {'omit': {layer_name: [field, ...]}} sub-dicts. The outer "
+        "layer_name key MUST be the same string passed as this tool's `name` "
+        "arg (the layer's display name) — NOT a sublayer ID from params, "
+        "params.LAYERDEFS, layer_id, or any other identifier. The server "
+        "auto-corrects single-entry sub-dicts with mismatched outer keys, "
+        "but the LLM should still emit the correct shape."
     ))] = None,
 ) -> Dict[str, Any]:
     """Add a Static Image overlay layer to an existing map."""

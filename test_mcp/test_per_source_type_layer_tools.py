@@ -1422,6 +1422,113 @@ class TestAdvancedMetadata:
         }
 
 
+class TestPopupOptionsOuterKeyNormalization:
+    """Server-side LLM-tolerance for the popup_options outer-key shape.
+
+    Debug session 2026-05-21 (turn 1): gemini-flash emitted
+    ``popup_options.aliases = {"0": {"comid": "River ID"}}`` on an ESRI
+    Image Service layer. The "0" came from the prompt's
+    params.LAYERDEFS = "0:rivercountry = 'China'" — the LLM conflated the
+    sublayer index with the outer key. The React popup-render path
+    (`Map.js:641-650`) keys alias maps by layer NAME, so the alias
+    silently never fired at click time. These tests pin the server-side
+    auto-normalize that catches the wrong outer key and rewrites it to
+    the layer's `name` arg.
+    """
+
+    def test_single_entry_mismatched_outer_key_rewritten_to_name(self):
+        """The motivating debug case: outer key '0' rewritten to 'China Flowlines'."""
+        result = add_esri_image_layer(
+            map_uuid=MAP_UUID,
+            name="China Flowlines",
+            url="https://example.com/MapServer",
+            popup_options={"aliases": {"0": {"comid": "River ID"}}},
+        )
+        layer = result["layer_update"]["layer"]
+        assert layer["attributeAliases"] == {
+            "China Flowlines": {"comid": "River ID"}
+        }, "outer key should have been rewritten from '0' to the name arg"
+
+    def test_single_entry_matching_outer_key_preserved(self):
+        """When the LLM gets it right, no rewrite happens."""
+        result = add_esri_image_layer(
+            map_uuid=MAP_UUID,
+            name="China Flowlines",
+            url="https://example.com/MapServer",
+            popup_options={
+                "aliases": {"China Flowlines": {"comid": "River ID"}}
+            },
+        )
+        layer = result["layer_update"]["layer"]
+        assert layer["attributeAliases"] == {
+            "China Flowlines": {"comid": "River ID"}
+        }
+
+    def test_literal_placeholder_outer_key_rewritten(self):
+        """LLM copies the literal 'layer_name' placeholder from the description."""
+        result = add_esri_image_layer(
+            map_uuid=MAP_UUID,
+            name="China Flowlines",
+            url="https://example.com/MapServer",
+            popup_options={
+                "aliases": {"layer_name": {"comid": "River ID"}}
+            },
+        )
+        layer = result["layer_update"]["layer"]
+        assert layer["attributeAliases"] == {
+            "China Flowlines": {"comid": "River ID"}
+        }
+
+    def test_omit_single_entry_outer_key_also_normalized(self):
+        """popup_options.omit gets the same normalization as aliases."""
+        result = add_esri_image_layer(
+            map_uuid=MAP_UUID,
+            name="China Flowlines",
+            url="https://example.com/MapServer",
+            popup_options={"omit": {"0": ["sensitive_field"]}},
+        )
+        layer = result["layer_update"]["layer"]
+        assert layer["omittedPopupAttributes"] == {
+            "China Flowlines": ["sensitive_field"]
+        }
+
+    def test_multi_entry_outer_keys_preserved(self):
+        """Multi-entry case is unusual for add_*_layer but preserved verbatim.
+
+        Caller's apparent intent of authoring popups across multiple layers
+        in one call is respected — no rewrite.
+        """
+        result = add_esri_image_layer(
+            map_uuid=MAP_UUID,
+            name="China Flowlines",
+            url="https://example.com/MapServer",
+            popup_options={
+                "aliases": {
+                    "Layer A": {"a": "Alpha"},
+                    "Layer B": {"b": "Beta"},
+                }
+            },
+        )
+        layer = result["layer_update"]["layer"]
+        assert layer["attributeAliases"] == {
+            "Layer A": {"a": "Alpha"},
+            "Layer B": {"b": "Beta"},
+        }
+
+    def test_empty_popup_options_aliases_preserved(self):
+        """Empty sub-dict is a no-op."""
+        result = add_esri_image_layer(
+            map_uuid=MAP_UUID,
+            name="China Flowlines",
+            url="https://example.com/MapServer",
+            popup_options={"aliases": {}},
+        )
+        # Empty aliases doesn't produce an attributeAliases entry; layer
+        # still ends up with the queryable default block.
+        layer = result["layer_update"]["layer"]
+        assert layer.get("attributeAliases", {}) == {}
+
+
 # ---------------------------------------------------------------------------
 # source_props per-source-type allowlist
 # ---------------------------------------------------------------------------

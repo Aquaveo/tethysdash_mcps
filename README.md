@@ -137,7 +137,7 @@ With both servers running and the chatbox configured, work through these end-to-
 
 | Check | Prompt / Action | Expected |
 |---|---|---|
-| Tool list | Open chatbox; observe tool count or slash-command popover | 25 tools surfaced (matches the standalone's `@mcp.tool` count) |
+| Tool list | Open chatbox; observe tool count or slash-command popover | 26 tools surfaced (matches the standalone's `@mcp.tool` count) |
 | No-backend tool | `"create a card with title hello and description world showing the value 42"` | Card visualization renders on the dashboard |
 | Backend-touching tool | `"list available intake plugins"` | Returns the local tethysdash's intake plugins (proves `TETHYSDASH_BASE_URL` is reachable) |
 | Runtime plugin registration | Register a plugin via the chatbox sidebar's plugin-registration UI (NOT the `/register_runtime_plugin` slash command — that tool is feature-flagged off in standalone mode and returns a `registration_not_supported` envelope; plugins are registered through the browser-side UI which posts to tethysdash's `/runtime-plugins/sync/` endpoint with the user's session) | tethysdash's registry updates; the standalone reads the new plugin on its next `list_available_visualizations` call (no restart needed) |

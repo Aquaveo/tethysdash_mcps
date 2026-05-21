@@ -149,3 +149,60 @@ def test_data_description_names_small_model_failure_mode(
         f"(e.g., 'parse errors on small models') so the LLM has a concrete "
         f"reason to prefer the URI path. Current description:\n{desc}"
     )
+
+
+@pytest.mark.parametrize("tool_name", TOOLS_REQUIRING_DATA_URI_PREFERENCE)
+def test_data_description_uses_imperative_framing(tool_name: str, tools_by_name):
+    """The framing must be imperative (MUST use data_uri when _cache_uri
+    is in scope), not soft preference (PREFER data_uri).
+
+    Observed 2026-05-20: gemini-3-flash and nemotron-3-nano both READ the
+    PREFER framing in their thinking traces, rationalized inline as
+    "small enough", and tokenized 24 rows verbatim into the next tool
+    call — wasting 12-37s of output emission per turn. Imperative framing
+    anchored on the observable signal (`_cache_uri` in a prior tool
+    result) gives the LLM a concrete rule to follow rather than a
+    judgment call to make.
+
+    The check: description must contain `MUST use \\`data_uri\\`` (the
+    imperative directive) AND the soft `PREFER \\`data_uri\\`` framing
+    must NOT be present. Catches future edits that drift back to the
+    softer preference language.
+    """
+    tool = tools_by_name.get(tool_name)
+    assert tool is not None
+    desc = _data_field_description(tool, tool_name)
+
+    assert "MUST use `data_uri`" in desc, (
+        f"{tool_name}: description must use imperative `MUST use "
+        f"`data_uri`` framing so the LLM treats the URI path as a rule "
+        f"rather than a preference. Soft `PREFER` framing was empirically "
+        f"insufficient for gemini-3-flash and nemotron-3-nano (debug "
+        f"session 2026-05-20). Current description:\n{desc}"
+    )
+    assert "PREFER `data_uri`" not in desc, (
+        f"{tool_name}: description must NOT carry the soft `PREFER "
+        f"`data_uri`` framing alongside the imperative `MUST use` "
+        f"directive — mixed signals undercut the rule. Current "
+        f"description:\n{desc}"
+    )
+
+
+@pytest.mark.parametrize("tool_name", TOOLS_REQUIRING_DATA_URI_PREFERENCE)
+def test_data_description_anchors_rule_on_cache_uri_presence(
+    tool_name: str, tools_by_name
+):
+    """The imperative rule must be conditional on the observable signal —
+    `_cache_uri` appearing in a recent tool result. Without that anchor
+    the LLM has no clear trigger and may treat the directive as
+    unconditional (rejecting legitimate synthesized inline data).
+    """
+    tool = tools_by_name.get(tool_name)
+    assert tool is not None
+    desc = _data_field_description(tool, tool_name)
+    assert "recent tool result" in desc.lower(), (
+        f"{tool_name}: imperative directive must be anchored on the "
+        f"observable signal (`_cache_uri` in a recent tool result), or "
+        f"the LLM has no concrete trigger to apply the rule. Current "
+        f"description:\n{desc}"
+    )

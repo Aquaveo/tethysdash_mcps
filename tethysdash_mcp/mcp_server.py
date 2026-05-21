@@ -1948,7 +1948,10 @@ def add_esri_image_layer(
     style: Annotated[Optional[Union[str, Dict[str, Any]]], Field(description="Layer style")] = None,
     source_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced source.props")] = None,
     layer_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced layer-level props")] = None,
-    popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Click-popup options")] = None,
+    popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description=(
+        "Click-popup options. Accepts {'aliases': {layer_name: {field: alias}}} "
+        "and {'omit': {layer_name: [field, ...]}} sub-dicts."
+    ))] = None,
 ) -> Dict[str, Any]:
     """Add an ESRI Image and Map Service layer to an existing map."""
     uuid_error = _validate_uuid_arg(map_uuid, "map_uuid", "create_map_visualization")
@@ -2068,7 +2071,10 @@ def add_esri_feature_layer(
     style: Annotated[Optional[Union[str, Dict[str, Any]]], Field(description="Layer style")] = None,
     source_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced source.props")] = None,
     layer_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced layer-level props")] = None,
-    popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Click-popup options")] = None,
+    popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description=(
+        "Click-popup options. Accepts {'aliases': {layer_name: {field: alias}}} "
+        "and {'omit': {layer_name: [field, ...]}} sub-dicts."
+    ))] = None,
 ) -> Dict[str, Any]:
     """Add an ESRI Feature Service layer to an existing map."""
     uuid_error = _validate_uuid_arg(map_uuid, "map_uuid", "create_map_visualization")
@@ -2172,7 +2178,10 @@ def add_geojson_layer(
     style: Annotated[Optional[Union[str, Dict[str, Any]]], Field(description="Layer style")] = None,
     source_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced source.props")] = None,
     layer_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced layer-level props")] = None,
-    popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Click-popup options")] = None,
+    popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description=(
+        "Click-popup options. Accepts {'aliases': {layer_name: {field: alias}}} "
+        "and {'omit': {layer_name: [field, ...]}} sub-dicts."
+    ))] = None,
 ) -> Dict[str, Any]:
     """Add a GeoJSON layer to an existing map."""
     uuid_error = _validate_uuid_arg(map_uuid, "map_uuid", "create_map_visualization")
@@ -2299,7 +2308,10 @@ def add_kml_layer(
     style: Annotated[Optional[Union[str, Dict[str, Any]]], Field(description="Layer style")] = None,
     source_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced source.props")] = None,
     layer_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced layer-level props")] = None,
-    popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Click-popup options")] = None,
+    popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description=(
+        "Click-popup options. Accepts {'aliases': {layer_name: {field: alias}}} "
+        "and {'omit': {layer_name: [field, ...]}} sub-dicts."
+    ))] = None,
 ) -> Dict[str, Any]:
     """Add a KML layer to an existing map."""
     uuid_error = _validate_uuid_arg(map_uuid, "map_uuid", "create_map_visualization")
@@ -2375,7 +2387,10 @@ def add_image_tile_layer(
     style: Annotated[Optional[Union[str, Dict[str, Any]]], Field(description="Layer style")] = None,
     source_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced source.props")] = None,
     layer_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced layer-level props")] = None,
-    popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Click-popup options")] = None,
+    popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description=(
+        "Click-popup options. Accepts {'aliases': {layer_name: {field: alias}}} "
+        "and {'omit': {layer_name: [field, ...]}} sub-dicts."
+    ))] = None,
 ) -> Dict[str, Any]:
     """Add an Image Tile layer to an existing map."""
     uuid_error = _validate_uuid_arg(map_uuid, "map_uuid", "create_map_visualization")
@@ -2456,7 +2471,10 @@ def add_vector_tile_layer(
     style: Annotated[Optional[Union[str, Dict[str, Any]]], Field(description="Layer style")] = None,
     source_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced source.props")] = None,
     layer_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced layer-level props")] = None,
-    popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Click-popup options")] = None,
+    popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description=(
+        "Click-popup options. Accepts {'aliases': {layer_name: {field: alias}}} "
+        "and {'omit': {layer_name: [field, ...]}} sub-dicts."
+    ))] = None,
 ) -> Dict[str, Any]:
     """Add a Vector Tile layer to an existing map."""
     uuid_error = _validate_uuid_arg(map_uuid, "map_uuid", "create_map_visualization")
@@ -2533,7 +2551,10 @@ def add_pmtiles_vector_layer(
     style: Annotated[Optional[Union[str, Dict[str, Any]]], Field(description="Layer style")] = None,
     source_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced source.props (tileSize, attributions)")] = None,
     layer_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced layer-level props")] = None,
-    popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Click-popup options")] = None,
+    popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description=(
+        "Click-popup options. Accepts {'aliases': {layer_name: {field: alias}}} "
+        "and {'omit': {layer_name: [field, ...]}} sub-dicts."
+    ))] = None,
 ) -> Dict[str, Any]:
     """Add a PMTiles Vector layer to an existing map."""
     uuid_error = _validate_uuid_arg(map_uuid, "map_uuid", "create_map_visualization")
@@ -2609,7 +2630,10 @@ def add_pmtiles_raster_layer(
     style: Annotated[Optional[Union[str, Dict[str, Any]]], Field(description="Layer style")] = None,
     source_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced source.props (tileSize, attributions)")] = None,
     layer_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced layer-level props")] = None,
-    popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Click-popup options")] = None,
+    popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description=(
+        "Click-popup options. Accepts {'aliases': {layer_name: {field: alias}}} "
+        "and {'omit': {layer_name: [field, ...]}} sub-dicts."
+    ))] = None,
 ) -> Dict[str, Any]:
     """Add a PMTiles Raster layer to an existing map."""
     uuid_error = _validate_uuid_arg(map_uuid, "map_uuid", "create_map_visualization")
@@ -2707,7 +2731,10 @@ def add_geotiff_layer(
         "source_props for the same key."
     ))] = None,
     layer_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced layer-level props")] = None,
-    popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Click-popup options")] = None,
+    popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description=(
+        "Click-popup options. Accepts {'aliases': {layer_name: {field: alias}}} "
+        "and {'omit': {layer_name: [field, ...]}} sub-dicts."
+    ))] = None,
 ) -> Dict[str, Any]:
     """Add a GeoTIFF raster layer to an existing map."""
     uuid_error = _validate_uuid_arg(map_uuid, "map_uuid", "create_map_visualization")
@@ -2844,7 +2871,10 @@ def add_static_image_layer(
     style: Annotated[Optional[Union[str, Dict[str, Any]]], Field(description="Layer style")] = None,
     source_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced source.props (attributions, etc.)")] = None,
     layer_props: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Advanced layer-level props")] = None,
-    popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description="Click-popup options")] = None,
+    popup_options: Annotated[Optional[Union[Dict[str, Any], str]], Field(description=(
+        "Click-popup options. Accepts {'aliases': {layer_name: {field: alias}}} "
+        "and {'omit': {layer_name: [field, ...]}} sub-dicts."
+    ))] = None,
 ) -> Dict[str, Any]:
     """Add a Static Image overlay layer to an existing map."""
     uuid_error = _validate_uuid_arg(map_uuid, "map_uuid", "create_map_visualization")

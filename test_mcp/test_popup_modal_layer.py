@@ -630,3 +630,80 @@ class TestToolDescription:
     def test_description_names_full_overwrite_semantic(self, description):
         d = description.lower()
         assert "replaces" in d
+
+
+class TestPopupConfigFieldDescription:
+    """Pin the popup_config field-description prose that guides the LLM.
+
+    Debug session 2026-05-21 turn 2: gemini-flash emitted:
+    (1) gridItems[0].args = {"river_id": "${feature.comid}"} (lowercase id)
+        when the GeoGLOWS plugin's arg_names was ["river_ID"] (capital ID).
+        At runtime the plugin looked up "river_ID", got undefined, fetched
+        nothing. Edit Visualization modal's "River ID" form input read by
+        "river_ID" key — empty in the UI.
+    (2) gridItems[0] position w=12, h=12 (Bootstrap 12-col convention)
+        when the popup uses tethysdash's DashboardLayout with colCount=100.
+        Tile rendered as ~12% of popup width — visibly too small.
+
+    Both bugs were description-routing failures: the field text didn't
+    name (1) the case-sensitive arg_names binding to the discovery-tool
+    output, and (2) the 100-col grid convention. These tests pin the
+    fix so future edits can't silently drop the guidance.
+    """
+
+    @pytest.fixture(scope="class")
+    def popup_config_field_description(self):
+        """Pull the popup_config field's description from the tool input schema."""
+        import asyncio
+
+        from tethysdash_mcp.mcp_server import mcp
+
+        async def go():
+            return await mcp._local_provider.list_tools()
+
+        loop = asyncio.new_event_loop()
+        try:
+            tools = loop.run_until_complete(go())
+        finally:
+            loop.close()
+        tool = next(t for t in tools if t.name == "configure_popup_modal_layer")
+        schema = tool.parameters
+        return schema["properties"]["popup_config"].get("description", "")
+
+    def test_field_description_names_args_case_sensitivity(
+        self, popup_config_field_description
+    ):
+        """gridItems[].args keys MUST match arg_names verbatim (case-sensitive)."""
+        d = popup_config_field_description.lower()
+        # The case-sensitivity rule must be explicit so the LLM doesn't
+        # snake_case-normalize from the user's natural-language phrasing.
+        assert "case-sensitive" in d, (
+            "popup_config description must name the case-sensitivity rule for "
+            "gridItems[].args keys. Without it, LLMs (gemini-flash specifically) "
+            "lowercase the user's label and produce keys like 'river_id' when the "
+            "plugin declared 'river_ID' — silent runtime fetch failure."
+        )
+        # The description must point at the authoritative source for the names.
+        assert "arg_names" in popup_config_field_description, (
+            "popup_config description must reference arg_names (from list_intake_plugins "
+            "/ list_available_visualizations) as the authoritative source for "
+            "gridItems[].args keys."
+        )
+
+    def test_field_description_names_popup_grid_col_count(
+        self, popup_config_field_description
+    ):
+        """gridItems[].position is a 100-column grid, NOT Bootstrap 12-col."""
+        d = popup_config_field_description.lower()
+        # The 100-col convention must be explicit so the LLM doesn't default
+        # to Bootstrap's 12-col grid (which produces tiles ~12% of popup width).
+        assert "100-column" in d or "100 column" in d or "100 col" in d, (
+            "popup_config description must name the popup's 100-column "
+            "react-grid-layout. Without it, LLMs default to Bootstrap's 12-col "
+            "convention (w=12) producing tiles that render at ~12% of popup width."
+        )
+        # Anti-pattern call-out: explicitly say NOT Bootstrap's 12-col.
+        assert "bootstrap" in d or "12-column" in d or "not 12" in d, (
+            "popup_config description must explicitly negate Bootstrap's "
+            "12-col convention so the LLM doesn't fall back to w=12."
+        )

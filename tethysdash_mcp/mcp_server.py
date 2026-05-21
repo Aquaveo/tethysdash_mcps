@@ -25,9 +25,9 @@ import os
 import json
 import re
 import uuid
-from typing import Optional, Dict, Any, List, Union
+from typing import Optional, Dict, Any, List, Literal, Union
 from typing_extensions import Annotated
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic.functional_validators import BeforeValidator
 from fastmcp import FastMCP
 
@@ -66,7 +66,7 @@ mcp = FastMCP(
     # + engine/embeddings.js) already runs per-prompt semantic-similarity
     # ranking using @huggingface/transformers on any server it classifies
     # as full-catalog with >= SMALL_CATALOG_THRESHOLD (8) tools. Tethysdash
-    # has 25 tools, well above that threshold, so the embedding ranker is
+    # has 26 tools, well above that threshold, so the embedding ranker is
     # the authoritative selection layer regardless of what BM25SearchTransform
     # would have done on the server side.
     #
@@ -3346,6 +3346,268 @@ def _emit_rejection_telemetry(
     LOGGER.info("patch_rejection %s", payload)
 
 
+# ---------------------------------------------------------------------------
+# configure_popup_modal_layer — Pydantic models + tool
+# ---------------------------------------------------------------------------
+#
+# Configures the custom-popup-modal feature shipped on the tethysdash side
+# 2026-05-13. Each map layer's persisted config can carry a popupConfig
+# object that drives a click-popup modal with an embedded grid of
+# visualizations. The MCP tool emits a single-op {patch_update} envelope
+# targeting /args/layers/<layer_index>/popupConfig, re-using the existing
+# apply_patch dispatch path in chatbox-core + DashboardLayout (no engine
+# wiring change).
+#
+# Models below mirror the canonical persisted shape consumed by
+# PopupConfigPane.js + DashboardLayout, so round-trip parity with a
+# UI-configured popup is trivial. Server-side normalization fills in the
+# fields the LLM shouldn't have to know about (uuid, i, id, stringified
+# args/metadata).
+
+
+class _PopupConfigPosition(BaseModel):
+    """Modal popup position as percentage of viewport (matches PopupConfigPane.js)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    leftPct: Annotated[float, Field(ge=0, le=100)]
+    topPct: Annotated[float, Field(ge=0, le=100)]
+    widthPct: Annotated[float, Field(ge=20, le=100)]
+    heightPct: Annotated[float, Field(ge=20, le=100)]
+
+
+class _PopupConfigGridItemInput(BaseModel):
+    """One embedded visualization inside a popup modal (LLM-facing shape).
+
+    The server transforms this into the canonical persisted shape
+    (``source``, ``args_string``, ``metadata_string``, ``uuid``, ``i``,
+    ``id``, ``x/y/w/h``) before writing into the layer config. Per-source-
+    type ``args`` validation is intentionally NOT enforced here — runtime
+    errors surface via the existing per-tile error boundary.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: Annotated[str, Field(min_length=1)]
+    args: Dict[str, Any]
+    x: Annotated[int, Field(ge=0)]
+    y: Annotated[int, Field(ge=0)]
+    w: Annotated[int, Field(ge=1)]
+    h: Annotated[int, Field(ge=1)]
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class _PopupConfigPayload(BaseModel):
+    """Custom popup modal config for a single map layer.
+
+    Mode is locked to ``"modal"`` in v1; the table-mode popup
+    configuration uses the existing ``popup_options.{aliases, omit}``
+    path on the ``add_*_layer`` tools.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["modal"]
+    position: Optional[_PopupConfigPosition] = None
+    titleTemplate: str = ""
+    gridItems: Annotated[List[_PopupConfigGridItemInput], Field(min_length=1)]
+
+
+# Centered 60x60 viewport rect — matches DEFAULT_POSITION at
+# reactapp/components/modals/MapLayer/PopupConfigPane.js:24.
+_DEFAULT_POPUP_POSITION: Dict[str, float] = {
+    "leftPct": 20.0,
+    "topPct": 20.0,
+    "widthPct": 60.0,
+    "heightPct": 60.0,
+}
+
+# Matches the React UI default for newly-authored popup gridItems
+# (PopupLayoutEditor.js:182).
+_DEFAULT_GRID_ITEM_METADATA: Dict[str, Any] = {"refreshRate": 0}
+
+
+def _popup_validation_error_envelope(ve: ValidationError) -> Dict[str, Any]:
+    """Convert a Pydantic ValidationError into a structured tool envelope.
+
+    Names the failing field locations + the validator that fired so the
+    LLM can self-repair in one cycle (Plan SC3, R6). Caps the number of
+    enumerated errors to keep the envelope compact.
+    """
+    errors = []
+    for err in ve.errors()[:8]:
+        loc = ".".join(str(p) for p in err.get("loc", ()))
+        errors.append({
+            "field": loc or "<root>",
+            "type": err.get("type", "value_error"),
+            "msg": err.get("msg", "validation failed"),
+        })
+    return {
+        "error": "invalid_popup_config: " + "; ".join(
+            f"{e['field']} {e['msg']}" for e in errors
+        ),
+        "fix_hint": (
+            "popup_config must be {mode: 'modal', gridItems: [...non-empty...], "
+            "position?: {leftPct, topPct, widthPct, heightPct}, "
+            "titleTemplate?: str}. Each gridItem needs {source, args (dict), "
+            "x, y, w, h, metadata?}. See tool description for the full shape."
+        ),
+        "errors": errors,
+    }
+
+
+@mcp.tool(
+    name="configure_popup_modal_layer",
+    description=(
+        "Configure a custom popup modal on an existing map layer. Use when "
+        "the user wants a click-popup that renders embedded visualizations "
+        "(plots, tables, cards, text) with feature-attribute-substituted "
+        "props, instead of (or alongside) the default attribute-table popup. "
+        "Required: map_uuid (from create_map_visualization or dashboard_state), "
+        "layer_index (0-based index into the map's layers, read from "
+        "dashboard_state), and popup_config. Returns a patch_update envelope "
+        "the chatbox engine applies via the existing apply_patch dispatch path. "
+        "Configure the popup in a turn AFTER the layer was added by an "
+        "add_*_layer tool — a same-turn add does NOT yet appear in "
+        "dashboard_state, so layer_index would be stale and the patch would "
+        "land on the wrong layer. "
+        "Template strings inside popup_config (titleTemplate and any string "
+        "value inside a gridItem's args dict) may embed ${feature.<key>} "
+        "tokens that substitute against the clicked feature's attributes at "
+        "popup-render time; missing keys resolve to empty string. "
+        "Discover valid gridItem source names via list_available_visualizations "
+        "(Default registry — Map, Text, Card, etc.), list_intake_plugins "
+        "(intake-backed plugins), or register_runtime_plugin (runtime/MFE plugins). "
+        "DO NOT use this tool to edit fields on an existing popupConfig — use "
+        "patch_visualization on the specific sub-path (e.g., "
+        "/args/layers/N/popupConfig/titleTemplate) instead. Re-calling this "
+        "tool REPLACES the entire popupConfig including all gridItem UUIDs."
+    ),
+    tags=["map", "layer", "popup", "modal", "configure", "click", "feature"],
+)
+def configure_popup_modal_layer(
+    map_uuid: Annotated[
+        str,
+        Field(description=(
+            "UUID of the target map visualization. Source: dashboard_state "
+            "or the return value of create_map_visualization."
+        )),
+    ],
+    layer_index: Annotated[
+        int,
+        Field(ge=0, description=(
+            "0-based index into the map's layers array (read from "
+            "dashboard_state). Configure popups in a turn AFTER the layer "
+            "was added by add_*_layer — a same-turn add does not yet appear "
+            "in dashboard_state."
+        )),
+    ],
+    popup_config: Annotated[
+        Union[Dict[str, Any], str],
+        Field(description=(
+            "Full popup modal payload. Shape: {mode: 'modal', position?: "
+            "{leftPct, topPct, widthPct, heightPct} percentages 0-100 "
+            "(widthPct/heightPct clamped >= 20), titleTemplate?: str (may "
+            "embed ${feature.<key>} tokens), gridItems: list of at least one "
+            "{source: str, args: dict (values may embed ${feature.<key>} "
+            "tokens), x: int >=0, y: int >=0, w: int >=1, h: int >=1, "
+            "metadata?: dict}}. Accepts both Dict and JSON-string Dict."
+        )),
+    ],
+) -> Dict[str, Any]:
+    """Build a {patch_update} envelope writing popup_config into the layer.
+
+    Server-side validation flow:
+      1. UUID format check on map_uuid
+      2. JSON-string -> dict coercion for popup_config
+      3. Pydantic shape validation against _PopupConfigPayload
+      4. Server-side normalization: mint uuid4/i/id, stringify args/metadata
+      5. Construct single RFC 6902 add op at /args/layers/<layer_index>/popupConfig
+
+    Returns ``{patch_update: {uuid, source: 'Map', ops: [single_add_op]}}``
+    on success or ``{error: "...", fix_hint: "..."}`` on validation failure.
+    """
+    uuid_error = _validate_uuid_arg(
+        map_uuid,
+        "map_uuid",
+        "create_map_visualization (or dashboard_state)",
+    )
+    if uuid_error:
+        return {"error": uuid_error}
+
+    coercible = {"popup_config": popup_config}
+    coerce_err = _coerce_json_strings(coercible)
+    if coerce_err:
+        return coerce_err
+    popup_config_dict = coercible["popup_config"]
+
+    if not isinstance(popup_config_dict, dict):
+        return {
+            "error": "invalid_popup_config: must be a dict (or JSON-string dict).",
+            "fix_hint": (
+                "Pass popup_config as a JSON object with at minimum {mode: 'modal', "
+                "gridItems: [...]} plus optional position and titleTemplate."
+            ),
+        }
+
+    try:
+        payload = _PopupConfigPayload(**popup_config_dict)
+    except ValidationError as ve:
+        return _popup_validation_error_envelope(ve)
+
+    position_dict = (
+        payload.position.model_dump()
+        if payload.position is not None
+        else dict(_DEFAULT_POPUP_POSITION)
+    )
+
+    gridItems_persisted: List[Dict[str, Any]] = []
+    for idx, item in enumerate(payload.gridItems):
+        metadata_dict = (
+            item.metadata if item.metadata is not None else dict(_DEFAULT_GRID_ITEM_METADATA)
+        )
+        gridItems_persisted.append({
+            "i": str(idx + 1),
+            "uuid": str(uuid.uuid4()),
+            "id": None,
+            "source": item.source,
+            "args_string": json.dumps(item.args),
+            "metadata_string": json.dumps(metadata_dict),
+            "x": item.x,
+            "y": item.y,
+            "w": item.w,
+            "h": item.h,
+        })
+
+    popup_config_persisted = {
+        "mode": payload.mode,
+        "position": position_dict,
+        "titleTemplate": payload.titleTemplate,
+        "gridItems": gridItems_persisted,
+    }
+
+    LOGGER.info(
+        "configure_popup_modal_layer map_uuid=%s layer_index=%d gridItems=%d",
+        map_uuid,
+        layer_index,
+        len(gridItems_persisted),
+    )
+
+    return {
+        "patch_update": {
+            "uuid": map_uuid,
+            "source": "Map",
+            "ops": [
+                {
+                    "op": "add",
+                    "path": f"/args/layers/{layer_index}/popupConfig",
+                    "value": popup_config_persisted,
+                }
+            ],
+        }
+    }
+
+
 @mcp.tool(
     name="patch_visualization",
     description=(
@@ -4630,6 +4892,59 @@ def _prompt_register_runtime_plugin(
     )
 
 
+@mcp.prompt(name="configure_popup_modal_layer")
+def _prompt_configure_popup_modal_layer(
+    map_uuid: Annotated[
+        str,
+        Field(
+            description=(
+                "UUID of the target map visualization (from dashboard_state "
+                "or the return of create_map_visualization)."
+            ),
+        ),
+    ],
+    layer_index: Annotated[
+        str,
+        Field(
+            description=(
+                "0-based index into the map's layers array, as a string "
+                "(FastMCP prompt args are string-typed). Read the index from "
+                "dashboard_state."
+            ),
+        ),
+    ],
+    popup_config: Annotated[
+        str,
+        Field(
+            description=(
+                "Popup modal payload as a JSON object string. Shape: "
+                "{mode: 'modal', position?: {leftPct, topPct, widthPct, "
+                "heightPct}, titleTemplate?: str, gridItems: [{source, "
+                "args, x, y, w, h, metadata?}, ...]}. The tool accepts "
+                "both Dict and JSON-string Dict; pass either."
+            ),
+        ),
+    ],
+) -> str:
+    """Scaffold a configure_popup_modal_layer tool call.
+
+    Drives the ``configure_popup_modal_layer`` tool. Use after the layer
+    was added by an ``add_*_layer`` tool — a same-turn add does not yet
+    appear in ``dashboard_state``, so ``layer_index`` would be stale.
+
+    Template strings inside ``popup_config`` (``titleTemplate`` and any
+    string value inside a gridItem's ``args``) may embed
+    ``${feature.<key>}`` tokens that substitute against the clicked
+    feature's attributes at popup-render time; missing keys resolve to
+    empty string.
+    """
+    return (
+        f"Configure a custom popup modal for the layer at index "
+        f"{layer_index} on map {map_uuid}. Apply the popup_config payload: "
+        f"{popup_config}."
+    )
+
+
 @mcp.prompt(name="patch_visualization")
 def _prompt_patch_visualization(
     uuid: Annotated[
@@ -4691,7 +5006,7 @@ def _prompt_patch_visualization(
 # enforces this.
 #
 # Phase 3c probe (commit a739750) removed BM25SearchTransform, so all
-# 25 tools are visible to chatbox-core's embedding ranker. No
+# 26 tools are visible to chatbox-core's embedding ranker. No
 # always_visible pinning is needed for any of these layer prompts.
 # ---------------------------------------------------------------------------
 

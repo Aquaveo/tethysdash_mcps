@@ -4219,10 +4219,16 @@ def add_dynamic_map_layer(
     ))],
     name: Annotated[str, Field(description="Display name for the layer in the layer control")],
     args: Annotated[Optional[Union[Dict[str, Any], str]], Field(description=(
-        "Plugin args dict passed to fetch_features at render time. Supports "
-        "${variable_name} syntax for dashboard variable references — these "
-        "are preserved verbatim at persist time. Pass None or omit when the "
-        "plugin takes no args."
+        "Plugin args dict passed to fetch_features at render time. Keys MUST "
+        "match the exact arg_names returned by list_intake_plugins for this "
+        "source — case-sensitive. Do NOT normalize to snake_case from the "
+        "user's natural-language phrasing. If list_intake_plugins returns "
+        "arg_names containing region_ID (capital ID), the key MUST be "
+        "region_ID — NOT region_id. The server auto-corrects case-fold-"
+        "matching keys when TETHYSDASH_BASE_URL is configured. "
+        "Supports ${variable_name} syntax in arg VALUES for dashboard "
+        "variable references — these are preserved verbatim at persist time. "
+        "Pass None or omit when the plugin takes no args."
     ))] = None,
 ) -> Dict[str, Any]:
     """Add a runtime plugin-backed map layer.
@@ -4270,9 +4276,30 @@ def add_dynamic_map_layer(
     if "error" in resolution:
         return resolution
 
+    # Server-side case-insensitive normalization for args keys against the
+    # source's declared arg_names. Catches the LLM's snake-case-
+    # normalization habit (same root cause as configure_popup_modal_layer
+    # and render_plugin). Soft-fails to pass-through when the source isn't
+    # found or TETHYSDASH_BASE_URL is unset.
+    plugin_arg_names = _fetch_plugin_arg_names(source)
+    normalized_args = _normalize_args_case(args, plugin_arg_names)
+    if normalized_args is None:
+        return {
+            "error": (
+                f"invalid_args: keys collide case-insensitively after "
+                f"matching against the plugin's declared arg_names. "
+                f"Source: {source!r}."
+            ),
+            "fix_hint": (
+                "Two of your args keys map to the same canonical arg_name "
+                "under case-fold. Keep only one entry per declared arg_name. "
+                "Use list_intake_plugins to confirm the exact arg_names."
+            ),
+        }
+
     try:
         builder = LayerConfigurationBuilder(name, "GeoJSON")
-        builder.set_plugin_source(source, args)
+        builder.set_plugin_source(source, normalized_args)
         layer_config = builder.build()
     except ValueError as err:
         return {"error": str(err)}
@@ -4303,7 +4330,17 @@ def add_dynamic_map_layer(
 )
 def render_plugin(
     source: Annotated[str, Field(description="Intake driver name from the 'source' field in list_intake_plugins results. Always call list_intake_plugins first to get the exact source name. Do NOT guess or invent source names — using a wrong name causes a 'not installed' error.")],
-    args: Annotated[Dict[str, Any], Field(description="Plugin arguments. Use ${variable_name} syntax to reference dashboard variable inputs. Example: {\"gauge_id\": \"${my_gauge}\"}")],
+    args: Annotated[Dict[str, Any], Field(description=(
+        "Plugin arguments. Keys MUST match the exact arg_names returned by "
+        "list_intake_plugins for this source — case-sensitive. The arg_names "
+        "field is the authoritative source; do NOT normalize to snake_case "
+        "from the user's natural-language phrasing or label. If list_intake_plugins "
+        "returns arg_names containing river_ID (capital ID), the key MUST be "
+        "river_ID — NOT river_id, River ID, or riverId. The server auto-corrects "
+        "case-fold-matching keys when TETHYSDASH_BASE_URL is configured, but "
+        "the LLM should still emit the correct shape. Use ${variable_name} "
+        "syntax in arg VALUES to reference dashboard variable inputs."
+    ))],
     w: Annotated[
         int,
         Field(
@@ -4338,12 +4375,36 @@ def render_plugin(
     """
     LOGGER.info("render_plugin: source=%s, args=%s", source, args)
 
+    # Server-side case-insensitive normalization for args keys against the
+    # source's declared arg_names. Catches the LLM's near-universal
+    # snake-case-normalization habit (e.g., emitting "river_id" when the
+    # plugin declared "river_ID"). When the source isn't found in the
+    # registry or TETHYSDASH_BASE_URL is unset, args pass through
+    # unchanged. See _normalize_args_case for the full rule table.
+    plugin_arg_names = _fetch_plugin_arg_names(source)
+    normalized_args = _normalize_args_case(args, plugin_arg_names)
+    if normalized_args is None:
+        return {
+            "error": (
+                f"invalid_args: keys collide case-insensitively after "
+                f"matching against the plugin's declared arg_names. "
+                f"Source: {source!r}."
+            ),
+            "fix_hint": (
+                "Two of your args keys map to the same canonical arg_name "
+                "under case-fold (e.g., 'river_id' AND 'River_ID' both "
+                "match 'river_ID'). Keep only one entry per declared "
+                "arg_name. Use list_intake_plugins to confirm the exact "
+                "arg_names for this source."
+            ),
+        }
+
     return {
         "visualization": {
             "source": source,
             "vizType": "intake_plugin",
             "uuid": str(uuid.uuid4()),
-            "args": args,
+            "args": normalized_args,
             "w": w,
             "h": h,
         }

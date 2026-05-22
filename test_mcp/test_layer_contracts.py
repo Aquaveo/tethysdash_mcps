@@ -648,3 +648,111 @@ class TestUuidValidationAddDynamicMapLayer:
                 "UUID validator must accept a real UUID; the error came from "
                 "elsewhere in the tool body. " + result["error"]
             )
+
+
+
+# ---------------------------------------------------------------------------
+# add_dynamic_map_layer server-side args case-fold normalization
+# (debug audit 2026-05-21, same root cause as PR #14)
+# ---------------------------------------------------------------------------
+
+
+class TestAddDynamicMapLayerArgsCaseNormalization:
+    """LLM snake-case-normalization habit applies to add_dynamic_map_layer too.
+
+    Per the 2026-05-21 audit, add_dynamic_map_layer had the same Bug B
+    class as pre-PR-#14 configure_popup_modal_layer: the LLM emits args
+    keys in snake_case regardless of the plugin's declared arg_names.
+    Server now case-fold-normalizes via the shared _fetch_plugin_arg_names
+    + _normalize_args_case helpers — same pattern as render_plugin.
+    """
+
+    PLUGIN = {
+        "source": "geoglows_map_layer",
+        "type": "map_layer",
+        "dynamic_map_layer": True,
+    }
+
+    def _stub_resolver(self, source):
+        def _stub(s):
+            if s == source:
+                return {"plugin": self.PLUGIN}
+            return {"error": f"Unknown plugin source: {s!r}"}
+        return _stub
+
+    def test_lowercase_key_rewritten_to_canonical_case(self, mocker):
+        mocker.patch(
+            "tethysdash_mcp.mcp_server._fetch_plugin_arg_names",
+            return_value=["region_ID"],
+        )
+        mocker.patch(
+            "tethysdash_mcp.mcp_server._resolve_dynamic_map_layer_plugin",
+            side_effect=self._stub_resolver("geoglows_map_layer"),
+        )
+        result = add_dynamic_map_layer(
+            map_uuid=MAP_UUID,
+            source="geoglows_map_layer",
+            name="Forecast",
+            args={"region_id": "south_america"},
+        )
+        assert "layer_update" in result
+        plugin_block = result["layer_update"]["layer"]["configuration"]["props"]["pluginSource"]
+        assert plugin_block["args"] == {"region_ID": "south_america"}
+
+    def test_exact_match_preserved(self, mocker):
+        mocker.patch(
+            "tethysdash_mcp.mcp_server._fetch_plugin_arg_names",
+            return_value=["region_ID"],
+        )
+        mocker.patch(
+            "tethysdash_mcp.mcp_server._resolve_dynamic_map_layer_plugin",
+            side_effect=self._stub_resolver("geoglows_map_layer"),
+        )
+        result = add_dynamic_map_layer(
+            map_uuid=MAP_UUID,
+            source="geoglows_map_layer",
+            name="Forecast",
+            args={"region_ID": "south_america"},
+        )
+        plugin_block = result["layer_update"]["layer"]["configuration"]["props"]["pluginSource"]
+        assert plugin_block["args"] == {"region_ID": "south_america"}
+
+    def test_fetch_failure_soft_fails_to_pass_through(self, mocker):
+        mocker.patch(
+            "tethysdash_mcp.mcp_server._fetch_plugin_arg_names",
+            return_value=None,
+        )
+        mocker.patch(
+            "tethysdash_mcp.mcp_server._resolve_dynamic_map_layer_plugin",
+            side_effect=self._stub_resolver("geoglows_map_layer"),
+        )
+        result = add_dynamic_map_layer(
+            map_uuid=MAP_UUID,
+            source="geoglows_map_layer",
+            name="Forecast",
+            args={"region_id": "south_america"},
+        )
+        # Soft-fail: original key preserved when fetch fails.
+        plugin_block = result["layer_update"]["layer"]["configuration"]["props"]["pluginSource"]
+        assert plugin_block["args"] == {"region_id": "south_america"}
+        assert "error" not in result
+
+    def test_case_fold_collision_rejected_with_structured_error(self, mocker):
+        mocker.patch(
+            "tethysdash_mcp.mcp_server._fetch_plugin_arg_names",
+            return_value=["region_ID"],
+        )
+        mocker.patch(
+            "tethysdash_mcp.mcp_server._resolve_dynamic_map_layer_plugin",
+            side_effect=self._stub_resolver("geoglows_map_layer"),
+        )
+        result = add_dynamic_map_layer(
+            map_uuid=MAP_UUID,
+            source="geoglows_map_layer",
+            name="Forecast",
+            args={"region_id": "A", "REGION_ID": "B"},
+        )
+        assert "error" in result
+        assert "fix_hint" in result
+        assert "collide" in result["error"].lower()
+        assert "layer_update" not in result

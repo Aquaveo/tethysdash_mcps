@@ -734,3 +734,70 @@ class TestRenderCustomVisualization:
         r1 = render_custom_visualization(source="RuntimePanel")
         r2 = render_custom_visualization(source="RuntimePanel")
         assert r1["visualization"]["uuid"] != r2["visualization"]["uuid"]
+
+
+# ---------------------------------------------------------------------------
+# render_plugin server-side args case-fold normalization
+# (debug audit 2026-05-21, same root cause as PR #14)
+# ---------------------------------------------------------------------------
+
+
+class TestRenderPluginArgsCaseNormalization:
+    """LLM snake-case-normalization habit applies to render_plugin too.
+
+    Per the 2026-05-21 audit, render_plugin had the same Bug B class as
+    pre-PR-#14 configure_popup_modal_layer: the LLM emits args keys in
+    snake_case regardless of the plugin's declared arg_names. Server now
+    case-fold-normalizes via the shared _fetch_plugin_arg_names +
+    _normalize_args_case helpers.
+    """
+
+    def test_lowercase_key_rewritten_to_canonical_case(self, mocker):
+        mocker.patch(
+            "tethysdash_mcp.mcp_server._fetch_plugin_arg_names",
+            return_value=["river_ID"],
+        )
+        result = render_plugin(
+            source="geoglows_forecast_plot",
+            args={"river_id": "${feature.comid}"},
+        )
+        assert result["visualization"]["args"] == {"river_ID": "${feature.comid}"}
+
+    def test_exact_match_preserved(self, mocker):
+        mocker.patch(
+            "tethysdash_mcp.mcp_server._fetch_plugin_arg_names",
+            return_value=["river_ID"],
+        )
+        result = render_plugin(
+            source="geoglows_forecast_plot",
+            args={"river_ID": "12345"},
+        )
+        assert result["visualization"]["args"] == {"river_ID": "12345"}
+
+    def test_fetch_failure_soft_fails_to_pass_through(self, mocker):
+        """When TETHYSDASH_BASE_URL is unset or fetch fails, args pass through."""
+        mocker.patch(
+            "tethysdash_mcp.mcp_server._fetch_plugin_arg_names",
+            return_value=None,
+        )
+        result = render_plugin(
+            source="geoglows_forecast_plot",
+            args={"river_id": "12345"},
+        )
+        # Soft-fail: prefer ship-broken-at-runtime over reject-the-whole-flow.
+        assert result["visualization"]["args"] == {"river_id": "12345"}
+        assert "error" not in result
+
+    def test_case_fold_collision_rejected_with_structured_error(self, mocker):
+        mocker.patch(
+            "tethysdash_mcp.mcp_server._fetch_plugin_arg_names",
+            return_value=["river_ID"],
+        )
+        result = render_plugin(
+            source="geoglows_forecast_plot",
+            args={"river_id": "X", "RIVER_ID": "Y"},
+        )
+        assert "error" in result
+        assert "fix_hint" in result
+        assert "collide" in result["error"].lower()
+        assert "visualization" not in result

@@ -2235,7 +2235,6 @@ class TestParamsRejection:
         assert "layer_update" in result, result
 
 
-# ---------------------------------------------------------------------------
 # WMS attribute-variables / popup-options outer-key resolution
 # (debug audit 2026-05-21: Class A bug — same shape as ESRI Image pre-PR-#12)
 # ---------------------------------------------------------------------------
@@ -2313,5 +2312,151 @@ class TestAddWmsLayerAttrKeyFromWmsLayers:
         layer = result["layer_update"]["layer"]
         # No attributeVariables / attributeAliases when not provided (build()
         # deletes the empty dicts).
+        assert "attributeVariables" not in layer
+        assert "attributeAliases" not in layer
+
+
+# ---------------------------------------------------------------------------
+# ESRI Image popup_options attr_key resolution (secondary Class A fix)
+# (debug audit 2026-05-21: attr_key resolution must also fire when
+# popup_options is provided — not only when attribute_variables is set)
+# ---------------------------------------------------------------------------
+
+
+class TestAddEsriImagePopupOptionsAttrKeyResolution:
+    """When popup_options is provided without attribute_variables, attr_key
+    must still resolve to the ESRI service's sublayer name. The React
+    popup-table render path (utilities.js getImageArcGISRestLayerAttributes)
+    keys by the service-side layer.name fetched from ?f=json — same as the
+    attribute_variables path. PR #11's outer-key normalization rewrites
+    popup_options.{aliases,omit} to attr_key, so attr_key must be the
+    resolved sublayer name regardless of which field triggered it.
+
+    Originally the resolver block fired only ``if attribute_variables:`` —
+    the popup_options-alone case fell through with the display-name
+    fallback, causing silent click-time misses in the popup table.
+    """
+
+    URL = "https://example.com/arcgis/rest/services/MyService/MapServer"
+
+    @patch(
+        "tethysdash_mcp.mcp_server._resolve_esri_layer_name",
+        return_value="Flow Forecast",
+    )
+    def test_popup_options_aliases_alone_uses_resolved_sublayer_name(
+        self, mock_resolve
+    ):
+        """popup_options.aliases without attribute_variables: outer key is
+        the resolved sublayer name, NOT the display name.
+
+        Real-world LLM emits the display name as the outer key (because the
+        tool description names the `name` arg) — PR #11's outer-key
+        normalization rewrites the single-entry outer key to attr_key. With
+        the fix, attr_key is now the resolved sublayer name when
+        popup_options is provided (previously fired only for
+        attribute_variables).
+        """
+        result = add_esri_image_layer(
+            map_uuid=MAP_UUID,
+            name="China Flowlines",
+            url=self.URL,
+            layer_id="0",
+            popup_options={
+                "aliases": {"China Flowlines": {"comid": "River ID"}},
+            },
+        )
+        layer = _get_layer_config(result)
+        # PR #11's single-entry outer-key normalize rewrote
+        # "China Flowlines" -> attr_key ("Flow Forecast").
+        assert "Flow Forecast" in layer["attributeAliases"]
+        assert "China Flowlines" not in layer["attributeAliases"]
+        assert layer["attributeAliases"]["Flow Forecast"] == {"comid": "River ID"}
+
+    @patch(
+        "tethysdash_mcp.mcp_server._resolve_esri_layer_name",
+        return_value="Flow Forecast",
+    )
+    def test_popup_options_omit_alone_uses_resolved_sublayer_name(
+        self, mock_resolve
+    ):
+        """popup_options.omit without attribute_variables: same resolution."""
+        result = add_esri_image_layer(
+            map_uuid=MAP_UUID,
+            name="China Flowlines",
+            url=self.URL,
+            layer_id="0",
+            popup_options={
+                "omit": {"China Flowlines": ["unused_field"]},
+            },
+        )
+        layer = _get_layer_config(result)
+        assert "Flow Forecast" in layer["omittedPopupAttributes"]
+        assert layer["omittedPopupAttributes"]["Flow Forecast"] == ["unused_field"]
+        assert "China Flowlines" not in layer["omittedPopupAttributes"]
+
+    @patch(
+        "tethysdash_mcp.mcp_server._resolve_esri_layer_name",
+        return_value="Flow Forecast",
+    )
+    def test_both_attribute_variables_and_popup_options_same_attr_key(
+        self, mock_resolve
+    ):
+        """Both fields keyed by the SAME resolved sublayer name."""
+        result = add_esri_image_layer(
+            map_uuid=MAP_UUID,
+            name="China Flowlines",
+            url=self.URL,
+            layer_id="0",
+            attribute_variables={"comid": "River ID"},
+            popup_options={
+                "aliases": {"China Flowlines": {"comid": "Comid Alias"}},
+            },
+        )
+        layer = _get_layer_config(result)
+        assert layer["attributeVariables"] == {"Flow Forecast": {"comid": "River ID"}}
+        assert layer["attributeAliases"] == {"Flow Forecast": {"comid": "Comid Alias"}}
+
+    @patch(
+        "tethysdash_mcp.mcp_server._resolve_esri_layer_name",
+        return_value=None,
+    )
+    def test_popup_options_alone_resolver_fails_falls_back_to_display_name(
+        self, mock_resolve
+    ):
+        """Soft-fail path: when resolver returns None, fallback to display
+        name (current behavior preserved when network down)."""
+        result = add_esri_image_layer(
+            map_uuid=MAP_UUID,
+            name="China Flowlines",
+            url=self.URL,
+            layer_id="0",
+            popup_options={
+                "aliases": {"China Flowlines": {"comid": "River ID"}},
+            },
+        )
+        layer = _get_layer_config(result)
+        assert "China Flowlines" in layer["attributeAliases"]
+        assert layer["attributeAliases"]["China Flowlines"] == {"comid": "River ID"}
+
+    def test_neither_attribute_variables_nor_popup_options_no_resolver_call(
+        self, mocker
+    ):
+        """Regression: when neither field is provided, the resolver block
+        doesn't fire (no wasted network call) and the layer builds normally."""
+        spy = mocker.patch(
+            "tethysdash_mcp.mcp_server._resolve_esri_layer_name",
+            return_value="Should Not Be Called",
+        )
+        result = add_esri_image_layer(
+            map_uuid=MAP_UUID,
+            name="China Flowlines",
+            url=self.URL,
+            layer_id="0",
+        )
+        assert "layer_update" in result
+        spy.assert_not_called()
+        layer = _get_layer_config(result)
+        # No attributeVariables / attributeAliases in the persisted layer
+        # (build() deletes the empty dicts).
         assert "attributeVariables" not in layer
         assert "attributeAliases" not in layer

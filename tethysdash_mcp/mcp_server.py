@@ -2087,7 +2087,16 @@ def add_esri_image_layer(
         flat_source_props["params"] = esri_params
 
     attr_key = name
-    if attribute_variables:
+    # Resolve attr_key to the ESRI service's sublayer name whenever either
+    # attribute_variables OR popup_options is provided. Both code paths feed
+    # the same React popup-render machinery, which keys alias maps by the
+    # ESRI service's actual sublayer name (fetched from ?f=json), NOT by the
+    # user-supplied display name. PR #11's outer-key normalization rewrites
+    # popup_options.{aliases,omit} to attr_key, so attr_key must be the
+    # resolved sublayer name for popup_options to land on the right key.
+    # Originally this block fired only `if attribute_variables:` — that
+    # missed the popup_options.aliases-alone case (2026-05-21 audit).
+    if attribute_variables or popup_options:
         effective_layer_id = flat_source_props.get("params", {}).get("LAYERS")
         if effective_layer_id is None:
             # LAYERDEFS encodes the sublayer ID as the prefix before the
@@ -2095,10 +2104,11 @@ def add_esri_image_layer(
             # "0:rivercountry = 'China'"). When the LLM sets LAYERDEFS but
             # not LAYERS or the layer_id arg, derive the layer index from
             # LAYERDEFS so the ?f=json lookup can resolve the actual ESRI
-            # sublayer name. Without this fallback, attributeVariables ends
-            # up keyed by the user-facing display name (the `name` arg),
-            # while the React popup-render path queries by the ESRI
-            # service's sublayer name — silent click-time lookup failure.
+            # sublayer name. Without this fallback, attributeVariables /
+            # popup_options end up keyed by the user-facing display name
+            # (the `name` arg), while the React popup-render path queries
+            # by the ESRI service's sublayer name — silent click-time
+            # lookup failure.
             layerdefs = flat_source_props.get("params", {}).get("LAYERDEFS")
             if isinstance(layerdefs, str) and ":" in layerdefs:
                 candidate = layerdefs.split(":", 1)[0].strip()

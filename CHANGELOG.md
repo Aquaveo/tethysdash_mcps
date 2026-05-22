@@ -7,6 +7,40 @@ Image tags follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-05-21
+
+The popup-modal arc: a new MCP tool + slash-prompt for configuring custom-popup modals on map layers, plus a server-side tolerance layer for LLM-emitted identifier-name mismatches (case-fold on plugin args, display-name vs service-name keying on ESRI / WMS layer aliases). Eight PRs, 31 new tests (suite grew 930 → 961).
+
+### Added
+
+- **`configure_popup_modal_layer` MCP tool + matching `@mcp.prompt`** (PR #10). New tool for first-time popup-modal setup on a map layer; complements `patch_visualization` (which is the right tool for partial edits to an existing `popupConfig`). The tool description leads with positive use ("USE THIS TOOL for FIRST-TIME popup-modal setup ..."), names the canonical `popupConfig` path + shape (`{mode, position, titleTemplate, gridItems}`), and explicitly carves out the boundary with `patch_visualization` to prevent LLM mis-routing. The slash-prompt counterpart lets users invoke a guided popup-modal setup flow without naming the tool.
+
+- **Server-side case-fold normalization for `configure_popup_modal_layer` gridItems[].args keys** (PR #14). New helpers `_fetch_plugin_arg_names(source)` and `_normalize_args_case(args, arg_names)` in `tethysdash_mcp/mcp_server.py`. The fetch hits `${TETHYSDASH_BASE_URL}/visualizations/list/` to read the source's authoritative `arg_names`; the normalizer case-fold-matches LLM-emitted keys against canonical names and rewrites mismatches in place. Soft-fails to pass-through when `TETHYSDASH_BASE_URL` is unset, the fetch fails, or the source isn't registered. Hard-fails (structured error envelope) only when two LLM-emitted keys collide case-insensitively. Catches gemini-flash's near-universal snake-case-normalization habit (e.g., emitting `river_id` for a plugin that declared `river_ID`).
+
+### Changed
+
+- **Case-fold args normalization extended to `render_plugin` + `add_dynamic_map_layer`** (PR #15). Same `_fetch_plugin_arg_names` + `_normalize_args_case` helpers reused at both new call sites — no new code in the helpers themselves. Description tightening in both tools' `args` fields too: replaced the prior concrete snake-case example (`{"gauge_id": "${my_gauge}"}`, which reinforced the LLM's snake-case default) with case-sensitivity prose naming the `river_ID` counterexample as anchoring shape only.
+
+- **ESRI Image `attr_key` resolution widened to fire for `popup_options` too** (PR #17). Previously gated on `if attribute_variables:`, missing the case where `popup_options.aliases` alone was provided — the popup-table render path keys by the ESRI service's sublayer name (from `?f=json`), so PR #11's outer-key normalization needed the resolved name as `attr_key` to land on the right key. Guard widened to `if attribute_variables or popup_options:`. Single-line semantic fix.
+
+- **`popup_options` description tightened across all 11 `add_*_layer` tools** (PR #11). The 10 stub descriptions that just said "Click-popup options" now explicitly document the `{layer_name: {field: alias}}` outer-key shape and anchor the outer-key contract to the tool's `name` arg. Companion server-side helper `_normalize_popup_outer_keys` auto-corrects single-entry sub-dicts when the LLM emits a mismatched outer key (e.g., the sublayer ID `"0"` from `params.LAYERDEFS` instead of the layer name).
+
+- **Tool description case-sensitive arg_names + 100-col grid guidance** (PR #13) for `configure_popup_modal_layer`'s `popup_config` field. Names the case-sensitivity rule for `gridItems[].args` keys (with the `river_ID` counterexample as anchoring shape) and the popup's 100-column react-grid-layout convention (with explicit "NOT Bootstrap's 12-column" anti-pattern call-out). Description-only — the case-sensitivity guidance is belt-and-suspenders alongside the server-side normalization in PR #14, since the description-only approach proved insufficient for the LLM's snake-case default on its own.
+
+### Fixed
+
+- **ESRI Image sublayer-name resolution falls back to `params.LAYERDEFS` when `params.LAYERS` is absent** (PR #12). The pre-existing `_resolve_esri_layer_name` could only read the sublayer ID from `params.LAYERS`; when the LLM specified the sublayer via `params.LAYERDEFS = "0:rivercountry = 'Bolivia'"` (no LAYERS, no `layer_id` arg), the resolver returned `None` and fell back to the user-supplied display name — but the React popup-render path queries by the ESRI service's sublayer name fetched from `?f=json`, so the click-time lookup silently missed. New extraction: if LAYERS is absent, parse the layer index from LAYERDEFS's `"<layer_id>:<where_clause>"` prefix.
+
+- **WMS `attr_key` resolves to the `wms_layers` value, not the display name** (PR #16). The React popup-render path keys WMS alias maps by the WMS LAYERS param value (e.g., `topp:states` from `DescribeFeatureType?typename=topp:states`), not by the user-supplied display label (e.g., "US States"). New helper `_resolve_wms_attr_key(wms_layers, fallback_name)` picks the first comma-separated entry from `wms_layers`; falls back to the display name when `wms_layers` is missing. Simpler than the ESRI Image variant — no HTTP fetch, the LAYERS value is already in the user's arg.
+
+### Tests
+
+- **31 new regression tests across the 8 PRs** (suite 930 → 961). Per-PR coverage pins each new contract: per-source-type layer-name normalization (5 in PR #12, 4 in PR #16, 5 in PR #17), case-fold args normalization for the popup-modal path (7 in PR #14) and the render_plugin / add_dynamic_map_layer paths (8 in PR #15), description drift on the 11 `add_*_layer` tools' popup_options (PR #11). Several tests assert structured error envelopes for the collision case (two LLM keys map to the same canonical arg_name).
+
+### Documentation
+
+- Solution documented at `docs/solutions/best-practices/mcp-tool-input-identifier-normalization-server-side-2026-05-21.md` (firoh workspace). The meta-pattern: server-side tolerant normalization for LLM-emitted identifier-name mismatches (case-fold, display-name vs service-name keying), with the escalation rule (description tightening → server-side normalization when the same class fails twice) and the boundary (normalize KEY NAMES against an authoritative registry, NOT VALUES — value corruption stays in edit-modal recovery per the prior carve-out). Cross-link added on the precursor doc `docs/solutions/logic-errors/esri-attribute-variables-key-mismatch-display-vs-service-name-2026-04-17.md` (refreshed via `/ce:compound-refresh`).
+
 ## [0.4.0] — 2026-05-19
 
 ### Changed

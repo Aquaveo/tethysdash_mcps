@@ -1675,6 +1675,28 @@ def _resolve_esri_layer_name(url: str, layer_id: Optional[str]) -> Optional[str]
         return None
 
 
+def _resolve_wms_attr_key(wms_layers: str, fallback_name: str) -> str:
+    """Return the canonical layer-name key for WMS ``attributeVariables``.
+
+    The React popup-render path (``reactapp/components/map/utilities.js``
+    ``getImageWMSLayerAttributes``) keys alias maps by the WMS ``LAYERS``
+    param value (e.g., ``"topp:states"``), not by the user-supplied display
+    name. Storing ``attributeVariables`` keyed by the display name causes
+    the click-time lookup to silently miss.
+
+    This helper picks the first comma-separated entry from ``wms_layers``
+    (stripped of whitespace). Multi-layer WMS calls are rare in practice
+    and the React attribute-config UI is per-layer anyway; the first layer
+    is the conservative pick. If ``wms_layers`` is empty or missing,
+    falls back to ``fallback_name`` so behavior never breaks for
+    misconfigured inputs.
+    """
+    if not wms_layers or not isinstance(wms_layers, str):
+        return fallback_name
+    first = wms_layers.split(",", 1)[0].strip()
+    return first or fallback_name
+
+
 # ---------------------------------------------------------------------------
 # Per-source-type map-layer tools.
 #
@@ -1940,11 +1962,18 @@ def add_wms_layer(
         builder.set_source_properties(**flat_source_props)
         if source_props:
             builder.set_source_properties(**source_props)
+        # WMS attr_key normalization: React's getImageWMSLayerAttributes
+        # keys alias maps by the LAYERS param value (e.g., "topp:states"),
+        # not by the user-supplied display name. Resolve attr_key to the
+        # first comma-separated entry of wms_layers so the persisted
+        # attributeVariables / popup_options keys match what the popup-
+        # render path queries. See _resolve_wms_attr_key for full rationale.
+        attr_key = _resolve_wms_attr_key(wms_layers, name)
         _apply_common_layer_options(
             builder,
             opacity=opacity, min_zoom=min_zoom, max_zoom=max_zoom,
             visible=visible, queryable=queryable, legend=legend, style=style,
-            attribute_variables=attribute_variables, attr_key=name,
+            attribute_variables=attribute_variables, attr_key=attr_key,
             layer_props=layer_props, popup_options=popup_options,
         )
         layer_config = builder.build()

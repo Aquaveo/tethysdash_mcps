@@ -1523,7 +1523,14 @@ class TestAdvancedMetadata:
         assert layer["omittedPopupAttributes"] == {"Cities": ["sensitive_field"]}
 
     def test_advanced_dicts_accepted_as_json_strings(self):
-        """LLM providers may serialize dict args as JSON strings — boundary coerces."""
+        """LLM providers may serialize dict args as JSON strings — boundary coerces.
+
+        Per the 2026-05-21 WMS attr_key fix, the popup_options outer key is
+        the wms_layers value (here ``"ws:layer"``), not the display name —
+        regardless of what the LLM emits as the outer key. PR #11's
+        single-entry outer-key normalization rewrites the mismatched
+        display-name key to the canonical attr_key.
+        """
         result = add_wms_layer(
             map_uuid=MAP_UUID,
             name="WMS JSON-String Dicts",
@@ -1536,8 +1543,11 @@ class TestAdvancedMetadata:
         config = _get_configuration(result)
         assert config["props"]["minZoom"] == 3
         assert config["props"]["source"]["props"]["projection"] == "EPSG:4326"
+        # Outer key normalized to wms_layers value ("ws:layer"), not the
+        # display name. This is what React's getImageWMSLayerAttributes
+        # queries by.
         assert result["layer_update"]["layer"]["omittedPopupAttributes"] == {
-            "WMS JSON-String Dicts": ["x"]
+            "ws:layer": ["x"]
         }
 
 
@@ -2223,3 +2233,85 @@ class TestParamsRejection:
             params={"STYLES": "default"},
         )
         assert "layer_update" in result, result
+
+
+# ---------------------------------------------------------------------------
+# WMS attribute-variables / popup-options outer-key resolution
+# (debug audit 2026-05-21: Class A bug — same shape as ESRI Image pre-PR-#12)
+# ---------------------------------------------------------------------------
+
+
+class TestAddWmsLayerAttrKeyFromWmsLayers:
+    """Server keys attributeVariables / popup_options.aliases by the WMS
+    LAYERS param value (e.g., "topp:states"), not the user-supplied
+    display name. React's getImageWMSLayerAttributes queries by the
+    LAYERS value — mismatch causes silent click-time lookup failures
+    just like the pre-PR-#12 ESRI Image bug.
+    """
+
+    URL = "https://example.com/geoserver/wms"
+
+    def test_attribute_variables_outer_key_is_wms_layers_value(self):
+        """The motivating bug: outer key uses LAYERS (topp:states), not display name."""
+        result = add_wms_layer(
+            map_uuid=MAP_UUID,
+            name="US States",
+            url=self.URL,
+            wms_layers="topp:states",
+            attribute_variables={"STATE_NAME": "selected_state"},
+        )
+        layer = result["layer_update"]["layer"]
+        assert layer["attributeVariables"] == {
+            "topp:states": {"STATE_NAME": "selected_state"}
+        }, "outer key should be wms_layers value, not the display name 'US States'"
+        assert "US States" not in layer["attributeVariables"]
+
+    def test_comma_separated_wms_layers_picks_first(self):
+        """For multi-layer WMS calls, the first layer is the conservative pick."""
+        result = add_wms_layer(
+            map_uuid=MAP_UUID,
+            name="Multi Layer",
+            url=self.URL,
+            wms_layers="topp:states,topp:counties",
+            attribute_variables={"STATE_NAME": "selected_state"},
+        )
+        layer = result["layer_update"]["layer"]
+        assert "topp:states" in layer["attributeVariables"]
+        assert "topp:counties" not in layer["attributeVariables"]
+
+    def test_popup_options_aliases_also_uses_wms_layers_value(self):
+        """popup_options.aliases gets the same outer-key normalization as attributeVariables."""
+        result = add_wms_layer(
+            map_uuid=MAP_UUID,
+            name="US States",
+            url=self.URL,
+            wms_layers="topp:states",
+            popup_options={
+                "aliases": {"topp:states": {"STATE_NAME": "State Name"}},
+            },
+        )
+        layer = result["layer_update"]["layer"]
+        # PR #11's outer-key normalize logic also has to use wms_layers
+        # to land the right key; verify the persisted shape matches what
+        # the React popup-table render path will query.
+        assert "topp:states" in layer["attributeAliases"]
+        assert layer["attributeAliases"]["topp:states"] == {
+            "STATE_NAME": "State Name"
+        }
+
+    def test_no_attribute_variables_no_regression(self):
+        """When neither attribute_variables nor popup_options is provided,
+        the regular WMS layer-add flow is unchanged.
+        """
+        result = add_wms_layer(
+            map_uuid=MAP_UUID,
+            name="Plain WMS",
+            url=self.URL,
+            wms_layers="topp:states",
+        )
+        assert "layer_update" in result
+        layer = result["layer_update"]["layer"]
+        # No attributeVariables / attributeAliases when not provided (build()
+        # deletes the empty dicts).
+        assert "attributeVariables" not in layer
+        assert "attributeAliases" not in layer

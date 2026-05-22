@@ -707,3 +707,199 @@ class TestPopupConfigFieldDescription:
             "popup_config description must explicitly negate Bootstrap's "
             "12-col convention so the LLM doesn't fall back to w=12."
         )
+
+
+# ---------------------------------------------------------------------------
+# Server-side case-insensitive args normalization (debug session 2026-05-21)
+# ---------------------------------------------------------------------------
+
+
+class TestPopupConfigArgsCaseNormalization:
+    """Server-side case-fold matching of gridItems[].args keys against
+    the plugin's declared arg_names (fetched from list_intake_plugins).
+
+    Debug session 2026-05-21 (third turn): gemini-flash emitted
+    ``gridItems[0].args = {"river_id": "${feature.comid}"}`` for the
+    geoglows_forecast_plot plugin whose declared arg_names is
+    ``["river_ID"]`` (capital ID). At runtime the plugin looked up
+    ``river_ID``, got undefined, fetched nothing. Description tightening
+    (PR #13) did NOT fix this — LLM case-normalization is too strong a
+    prior to override via prose alone. Per
+    ``feedback_proactive_over_reactive_llm_routing.md``, the escalation
+    is server-side normalization.
+    """
+
+    def test_lowercase_key_rewritten_to_canonical_case(self, mocker):
+        """The motivating case: river_id -> river_ID."""
+        mocker.patch(
+            "tethysdash_mcp.mcp_server._fetch_plugin_arg_names",
+            return_value=["river_ID"],
+        )
+        result = configure_popup_modal_layer(
+            map_uuid=_fresh_uuid(),
+            layer_index=0,
+            popup_config=_minimal_payload(
+                gridItems=[
+                    _minimal_gridItem(
+                        source="geoglows_forecast_plot",
+                        args={"river_id": "${feature.comid}"},
+                    )
+                ],
+            ),
+        )
+        gridItem = result["patch_update"]["ops"][0]["value"]["gridItems"][0]
+        persisted_args = json.loads(gridItem["args_string"])
+        assert persisted_args == {"river_ID": "${feature.comid}"}, (
+            "Server should have case-fold-rewritten 'river_id' to 'river_ID' "
+            "to match the plugin's declared arg_names."
+        )
+
+    def test_exact_match_preserved(self, mocker):
+        """When LLM gets the case right, the key is preserved verbatim."""
+        mocker.patch(
+            "tethysdash_mcp.mcp_server._fetch_plugin_arg_names",
+            return_value=["river_ID"],
+        )
+        result = configure_popup_modal_layer(
+            map_uuid=_fresh_uuid(),
+            layer_index=0,
+            popup_config=_minimal_payload(
+                gridItems=[
+                    _minimal_gridItem(
+                        source="geoglows_forecast_plot",
+                        args={"river_ID": "${feature.comid}"},
+                    )
+                ],
+            ),
+        )
+        gridItem = result["patch_update"]["ops"][0]["value"]["gridItems"][0]
+        assert json.loads(gridItem["args_string"]) == {"river_ID": "${feature.comid}"}
+
+    def test_unknown_source_args_pass_through(self, mocker):
+        """When source isn't in the registry, args pass through unchanged."""
+        mocker.patch(
+            "tethysdash_mcp.mcp_server._fetch_plugin_arg_names",
+            return_value=None,
+        )
+        result = configure_popup_modal_layer(
+            map_uuid=_fresh_uuid(),
+            layer_index=0,
+            popup_config=_minimal_payload(
+                gridItems=[
+                    _minimal_gridItem(
+                        source="some_unknown_plugin",
+                        args={"weird_key": "value"},
+                    )
+                ],
+            ),
+        )
+        gridItem = result["patch_update"]["ops"][0]["value"]["gridItems"][0]
+        # Pass-through: no normalization happens for unknown sources.
+        assert json.loads(gridItem["args_string"]) == {"weird_key": "value"}
+
+    def test_default_registry_source_no_declared_args(self, mocker):
+        """Default registry types (Map, Text) have no arg_names; args pass through."""
+        mocker.patch(
+            "tethysdash_mcp.mcp_server._fetch_plugin_arg_names",
+            return_value=[],
+        )
+        result = configure_popup_modal_layer(
+            map_uuid=_fresh_uuid(),
+            layer_index=0,
+            popup_config=_minimal_payload(
+                gridItems=[
+                    _minimal_gridItem(
+                        source="Text",
+                        args={"text": "<h1>Hello</h1>"},
+                    )
+                ],
+            ),
+        )
+        gridItem = result["patch_update"]["ops"][0]["value"]["gridItems"][0]
+        assert json.loads(gridItem["args_string"]) == {"text": "<h1>Hello</h1>"}
+
+    def test_fetch_failure_soft_fails_to_pass_through(self, mocker):
+        """When _fetch_plugin_arg_names returns None (fetch failed), args pass through."""
+        mocker.patch(
+            "tethysdash_mcp.mcp_server._fetch_plugin_arg_names",
+            return_value=None,  # simulates network failure
+        )
+        result = configure_popup_modal_layer(
+            map_uuid=_fresh_uuid(),
+            layer_index=0,
+            popup_config=_minimal_payload(
+                gridItems=[
+                    _minimal_gridItem(
+                        source="geoglows_forecast_plot",
+                        args={"river_id": "${feature.comid}"},
+                    )
+                ],
+            ),
+        )
+        gridItem = result["patch_update"]["ops"][0]["value"]["gridItems"][0]
+        # Soft-fail: the original (wrong-case) key is preserved when we can't
+        # fetch arg_names. Better to ship a broken-at-runtime call than to
+        # reject the whole flow when the registry is unreachable.
+        assert json.loads(gridItem["args_string"]) == {"river_id": "${feature.comid}"}
+        assert "error" not in result
+
+    def test_case_fold_collision_rejected_with_structured_error(self, mocker):
+        """Two LLM-emitted keys colliding on case-fold -> structured envelope."""
+        mocker.patch(
+            "tethysdash_mcp.mcp_server._fetch_plugin_arg_names",
+            return_value=["river_ID"],
+        )
+        result = configure_popup_modal_layer(
+            map_uuid=_fresh_uuid(),
+            layer_index=0,
+            popup_config=_minimal_payload(
+                gridItems=[
+                    _minimal_gridItem(
+                        source="geoglows_forecast_plot",
+                        # Both keys map to canonical "river_ID" under case-fold.
+                        args={"river_id": "${feature.comid}", "RIVER_ID": "X"},
+                    )
+                ],
+            ),
+        )
+        assert "error" in result
+        assert "fix_hint" in result
+        assert "collide" in result["error"].lower() or "collide" in result["fix_hint"].lower()
+        assert "patch_update" not in result
+
+    def test_normalization_runs_per_gridItem_independently(self, mocker):
+        """Each gridItem's args are normalized against its own source's arg_names."""
+        def fake_fetch(source):
+            if source == "geoglows_forecast_plot":
+                return ["river_ID"]
+            if source == "Text":
+                return []
+            return None
+
+        mocker.patch(
+            "tethysdash_mcp.mcp_server._fetch_plugin_arg_names",
+            side_effect=fake_fetch,
+        )
+        result = configure_popup_modal_layer(
+            map_uuid=_fresh_uuid(),
+            layer_index=0,
+            popup_config=_minimal_payload(
+                gridItems=[
+                    _minimal_gridItem(
+                        source="geoglows_forecast_plot",
+                        args={"river_id": "X"},
+                        x=0, y=0, w=50, h=40,
+                    ),
+                    _minimal_gridItem(
+                        source="Text",
+                        args={"text": "Y"},
+                        x=50, y=0, w=50, h=40,
+                    ),
+                ],
+            ),
+        )
+        gridItems = result["patch_update"]["ops"][0]["value"]["gridItems"]
+        # Plugin item: normalized to canonical case.
+        assert json.loads(gridItems[0]["args_string"]) == {"river_ID": "X"}
+        # Text item: no normalization (empty arg_names), passes through.
+        assert json.loads(gridItems[1]["args_string"]) == {"text": "Y"}

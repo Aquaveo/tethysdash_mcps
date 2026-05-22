@@ -3442,6 +3442,98 @@ _DEFAULT_POPUP_POSITION: Dict[str, float] = {
 _DEFAULT_GRID_ITEM_METADATA: Dict[str, Any] = {"refreshRate": 0}
 
 
+def _fetch_plugin_arg_names(source: str) -> Optional[List[str]]:
+    """Fetch the declared ``arg_names`` for a registered viz source.
+
+    Hits the same backend endpoint as ``list_intake_plugins`` but returns
+    just the arg-name list for the given source. Used by
+    ``configure_popup_modal_layer`` to case-normalize LLM-emitted
+    ``gridItems[].args`` keys against the plugin's authoritative
+    declared arg names.
+
+    Returns:
+        list[str] of arg_names when the source is found and has declared args.
+        Empty list when the source is found but has no declared args (e.g.,
+        Default registry types like Map/Text whose args are open-shape).
+        ``None`` when the source isn't in the registry OR the fetch failed.
+        Callers should treat ``None`` as "skip normalization" (don't reject
+        the call — the LLM may be using a source name we don't know about).
+    """
+    if not TETHYSDASH_BASE_URL:
+        return None
+    try:
+        response = http_requests.get(
+            f"{TETHYSDASH_BASE_URL}/visualizations/list/",
+            timeout=10,
+        )
+        response.raise_for_status()
+        data = response.json()
+        groups = (
+            data.get("visualizations", []) if isinstance(data, dict)
+            else data if isinstance(data, list)
+            else []
+        )
+        for group in groups:
+            options = group.get("options", []) if isinstance(group, dict) else []
+            for opt in options:
+                if opt.get("source") != source:
+                    continue
+                args = opt.get("args", {})
+                if not isinstance(args, dict):
+                    return []
+                return list(args.keys())
+        return None
+    except Exception as exc:
+        LOGGER.warning(
+            "Failed to fetch arg_names for source %r from %s: %s",
+            source, TETHYSDASH_BASE_URL, exc,
+        )
+        return None
+
+
+def _normalize_args_case(
+    args: Dict[str, Any], arg_names: Optional[List[str]]
+) -> Optional[Dict[str, Any]]:
+    """Case-fold-match LLM-emitted ``args`` keys against the source's ``arg_names``.
+
+    LLMs (especially small models like gemini-flash) aggressively
+    snake-case identifiers regardless of explicit "case-sensitive"
+    instructions — e.g., the user prompt "River ID" becomes
+    ``{"river_id": ...}`` even when the plugin declared ``river_ID``.
+    This helper rewrites mismatched keys to the canonical case.
+
+    Rules:
+    * ``arg_names`` is ``None`` (source not found / fetch failed) -> return
+      ``args`` unchanged. Don't reject — the LLM may know something we don't.
+    * ``arg_names`` is empty (source has no declared args, e.g., Default
+      registry types) -> return ``args`` unchanged.
+    * Exact match exists -> keep the key as-is.
+    * Case-fold match exists and the canonical name is different -> rewrite.
+    * No match for a key -> keep as-is (don't reject; surface as runtime
+      error per the existing "cheap path" KTD #2 if the plugin rejects it).
+    * Two LLM-emitted keys collide under case-fold (e.g., both
+      ``river_id`` and ``RIVER_ID`` map to the same canonical
+      ``river_ID``) -> return ``None`` to signal a structured error.
+
+    Returns:
+        The (possibly rewritten) args dict, OR ``None`` when two
+        LLM-emitted keys collide case-insensitively. Caller converts
+        ``None`` into a structured ``{error, fix_hint}`` envelope.
+    """
+    if arg_names is None or not arg_names:
+        return args
+    canonical_by_lower = {n.lower(): n for n in arg_names}
+    seen_lower: Dict[str, str] = {}
+    rewritten: Dict[str, Any] = {}
+    for k, v in args.items():
+        canonical = canonical_by_lower.get(k.lower(), k)
+        if canonical in seen_lower.values():
+            return None  # collision under case-fold
+        seen_lower[k] = canonical
+        rewritten[canonical] = v
+    return rewritten
+
+
 def _popup_validation_error_envelope(ve: ValidationError) -> Dict[str, Any]:
     """Convert a Pydantic ValidationError into a structured tool envelope.
 
@@ -3550,9 +3642,11 @@ def configure_popup_modal_layer(
             "the popup's 100-column react-grid-layout (the SAME grid system "
             "as the main tethysdash dashboard — NOT Bootstrap's 12-column "
             "grid). Valid range: x, y >= 0; w, h >= 1; w <= 100. To make a "
-            "single gridItem fill the popup width use w=100; for a typical "
-            "single-visualization popup that fills the popup, use w=100 with "
-            "h sized to the popup height (e.g., h=40-60 for a tall plot)."
+            "single gridItem fill the popup width use w=100. Pick h based on "
+            "expected content: h~25-30 for a single time-series plot "
+            "(common case), h~35-40 for a tall plot or one with thick "
+            "legends, h~15-20 for a card or short text block. Avoid h>50 "
+            "unless the popup will scroll."
         )),
     ],
 ) -> Dict[str, Any]:
@@ -3607,12 +3701,35 @@ def configure_popup_modal_layer(
         metadata_dict = (
             item.metadata if item.metadata is not None else dict(_DEFAULT_GRID_ITEM_METADATA)
         )
+        # Server-side case-insensitive normalization for args keys against
+        # the source's declared arg_names. Catches the LLM's near-universal
+        # snake-case-normalization habit (e.g., emitting "river_id" when
+        # the plugin declared "river_ID"). When the source has no declared
+        # arg_names or isn't found in the registry, args pass through
+        # unchanged. See _normalize_args_case for the full rule table.
+        plugin_arg_names = _fetch_plugin_arg_names(item.source)
+        normalized_args = _normalize_args_case(item.args, plugin_arg_names)
+        if normalized_args is None:
+            return {
+                "error": (
+                    f"invalid_popup_config: gridItems[{idx}].args contains keys "
+                    f"that collide case-insensitively after matching against the "
+                    f"plugin's declared arg_names. Source: {item.source!r}."
+                ),
+                "fix_hint": (
+                    "Two of your args keys map to the same canonical arg_name "
+                    "under case-fold (e.g., 'river_id' AND 'River_ID' both "
+                    "match 'river_ID'). Keep only one entry per declared "
+                    "arg_name. Use list_intake_plugins to confirm the exact "
+                    "arg_names for this source."
+                ),
+            }
         gridItems_persisted.append({
             "i": str(idx + 1),
             "uuid": str(uuid.uuid4()),
             "id": None,
             "source": item.source,
-            "args_string": json.dumps(item.args),
+            "args_string": json.dumps(normalized_args),
             "metadata_string": json.dumps(metadata_dict),
             "x": item.x,
             "y": item.y,

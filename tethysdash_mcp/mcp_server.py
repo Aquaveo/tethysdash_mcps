@@ -398,7 +398,7 @@ def _records_to_traces(
                 "x": [r.get(x_field) for r in records],
                 "y": [r.get(y_field) for r in records],
                 "type": "scatter",
-                "mode": "lines+markers",
+                "mode": "lines",
                 "name": y_field,
             }
         ]
@@ -418,7 +418,7 @@ def _records_to_traces(
             "x": g["x"],
             "y": g["y"],
             "type": "scatter",
-            "mode": "lines+markers",
+            "mode": "lines",
             "name": str(key),
         }
         for key, g in groups.items()

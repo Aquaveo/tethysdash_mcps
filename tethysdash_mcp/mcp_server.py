@@ -1646,26 +1646,40 @@ def _resolve_esri_layer_name(url: str, layer_id: Optional[str]) -> Optional[str]
     service name — not the client display name — ensures the click-time
     attribute variable lookup matches.
 
+    When ``layer_id`` is None or unparseable, fetches the service metadata
+    and falls back to layer 0's name if exactly one layer is published.
+    Most NOAA / single-purpose MapServer URLs publish one layer at index 0;
+    the LLM rarely passes a `layer_id` for those and the previous "give up
+    on None" behavior silently broke attribute mapping.
+
     Returns None on any failure so the caller can fall back to the display name.
     """
-    if layer_id is None:
-        return None
-
-    # Parse numeric layer index from layer_id (e.g., "show:0" → 0, "0" → 0)
-    index_str = layer_id.split(":")[-1] if ":" in layer_id else layer_id
-    try:
-        layer_index = int(index_str)
-    except (ValueError, TypeError):
-        return None
+    layer_index: Optional[int] = None
+    if layer_id is not None:
+        # Parse numeric layer index from layer_id (e.g., "show:0" → 0, "0" → 0)
+        index_str = layer_id.split(":")[-1] if ":" in layer_id else layer_id
+        try:
+            layer_index = int(index_str)
+        except (ValueError, TypeError):
+            layer_index = None
 
     try:
         resp = http_requests.get(f"{url}?f=json", timeout=5)
         resp.raise_for_status()
         service_info = resp.json()
         layers = service_info.get("layers", [])
-        for layer in layers:
-            if layer.get("id") == layer_index:
-                return layer.get("name")
+        if not layers:
+            return None
+        # Explicit layer_index match
+        if layer_index is not None:
+            for layer in layers:
+                if layer.get("id") == layer_index:
+                    return layer.get("name")
+            return None
+        # No layer_id supplied → if exactly one layer, use it
+        if len(layers) == 1:
+            return layers[0].get("name")
+        # Multiple layers, no layer_id — ambiguous, fall back to display name
         return None
     except Exception as exc:
         LOGGER.warning(
@@ -2114,6 +2128,12 @@ def add_esri_image_layer(
                 candidate = layerdefs.split(":", 1)[0].strip()
                 if candidate.isdigit():
                     effective_layer_id = candidate
+        # Fall back to the layer_id arg itself when not derivable from params.
+        # _resolve_esri_layer_name also handles layer_id=None by checking
+        # whether the service publishes exactly one layer (the common case
+        # for NOAA single-purpose MapServer URLs).
+        if effective_layer_id is None:
+            effective_layer_id = layer_id
         resolved = _resolve_esri_layer_name(url, effective_layer_id)
         if resolved:
             attr_key = resolved

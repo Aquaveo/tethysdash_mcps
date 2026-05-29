@@ -250,6 +250,7 @@ CORS_MIDDLEWARE = [
         allow_credentials=ALLOW_CREDENTIALS,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["Mcp-Session-Id", "Last-Event-Id", "mcp-protocol-version"],
     ),
 ]
 
